@@ -249,10 +249,17 @@
     <div class="group owned-only">
       <h3>Preprocess</h3>
       <div class="field">
-        <label>Remove background <span class="hint">u2netp ML</span></label>
+        <label>Remove background <span class="hint">ML matte</span></label>
         <div class="seg" id="bg_remove" data-default="off">
           <button data-v="off" class="active">Off</button>
           <button data-v="on">On</button>
+        </div>
+      </div>
+      <div class="field bgremove-only">
+        <label>Quality <span class="hint">isnet = sharper, slower</span></label>
+        <div class="seg" id="bg_model" data-default="u2netp">
+          <button data-v="u2netp" class="active">Fast</button>
+          <button data-v="isnet">High</button>
         </div>
       </div>
       <div class="field bgremove-only">
@@ -457,11 +464,11 @@ function setSeg(id, v) {
   $(id).querySelectorAll('button').forEach(b =>
     b.classList.toggle('active', b.dataset.v === v));
 }
-for (const id of ['engine','bg_remove','quantize','curve','refine','color_mode','hierarchical','mode']) {
+for (const id of ['engine','bg_remove','bg_model','quantize','curve','refine','color_mode','hierarchical','mode']) {
   $(id).querySelectorAll('button').forEach(btn => {
     btn.addEventListener('click', () => {
       setSeg(id, btn.dataset.v);
-      if (!['quantize','engine','curve','bg_remove','refine'].includes(id)) markCustom();
+      if (!['quantize','engine','curve','bg_remove','bg_model','refine'].includes(id)) markCustom();
       reflectConditional();
       convertNow();
     });
@@ -521,6 +528,8 @@ function gatherParams() {
   const p = {
     engine: segValue('engine'),
     bg_remove: ownedEngine ? segValue('bg_remove') : 'off',
+    // Only meaningful while bg removal is active; send a valid default otherwise.
+    bg_model: (ownedEngine && segValue('bg_remove') === 'on') ? segValue('bg_model') : 'u2netp',
     quantize: segValue('quantize'),
     curve: segValue('curve'),
     refine: ownedEngine ? segValue('refine') : 'off',

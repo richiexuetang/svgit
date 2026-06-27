@@ -78,6 +78,7 @@ struct RawParams {
     engine: Option<String>,
     bg_remove: Option<String>,
     bg_threshold: Option<f64>,
+    bg_model: Option<String>,
     seg_conf: Option<f64>,
     seg_max: Option<usize>,
     refine: Option<String>,
@@ -139,6 +140,7 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
             "bg_threshold" => {
                 p.bg_threshold = value.parse().ok().filter(|v: &f64| v.is_finite())
             }
+            "bg_model" => p.bg_model = Some(value.to_string()),
             "seg_conf" => p.seg_conf = value.parse().ok().filter(|v: &f64| v.is_finite()),
             "seg_max" => p.seg_max = value.parse().ok(),
             "refine" => p.refine = Some(value.to_string()),
@@ -180,6 +182,7 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
     let curve_err = p.curve_error.unwrap_or(2.0).clamp(0.1, 20.0);
     let bg_remove = matches!(p.bg_remove.as_deref(), Some("on") | Some("true") | Some("1"));
     let bg_threshold = p.bg_threshold.unwrap_or(0.5).clamp(0.0, 1.0) as f32;
+    let bg_model = svgit_bgremove::Model::parse(p.bg_model.as_deref().unwrap_or("u2netp"));
     let engine_segment = matches!(p.engine.as_deref(), Some("segment"));
     let seg_conf = p.seg_conf.unwrap_or(0.4).clamp(0.05, 0.95) as f32;
     let seg_max = p.seg_max.unwrap_or(48).clamp(1, 256);
@@ -193,10 +196,10 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
 
     // Fail fast on a missing model *before* taking a converter slot — otherwise
     // a misconfigured deploy burns the whole pool on a predictable error.
-    if bg_remove && !svgit_bgremove::default_model_path().exists() {
+    if bg_remove && !svgit_bgremove::default_model_path(bg_model).exists() {
         return Err(AppError::internal(format!(
             "background-removal model not found at {} — run scripts/fetch-models.sh",
-            svgit_bgremove::default_model_path().display()
+            svgit_bgremove::default_model_path(bg_model).display()
         )));
     }
     if engine_segment && !svgit_objseg::default_model_path().exists() {
@@ -268,16 +271,18 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
             )
         });
 
-        // ML preprocess: drop the background by writing a u2netp saliency matte
-        // into the alpha channel. The owned tracer skips alpha==0 deterministically
-        // (the UI restricts the toggle to it); VTracer only keys transparency out
-        // when its scanline heuristic fires, so via the API it is best-effort.
+        // ML preprocess: drop the background by writing a saliency matte (u2netp
+        // or the higher-accuracy ISNet) into the alpha channel. The owned tracer
+        // skips alpha==0 deterministically (the UI restricts the toggle to it);
+        // VTracer only keys transparency out when its scanline heuristic fires,
+        // so via the API it is best-effort.
         if bg_remove {
             raw = svgit_bgremove::remove_background(
                 &raw,
                 w as usize,
                 h as usize,
-                &svgit_bgremove::default_model_path(),
+                bg_model,
+                &svgit_bgremove::default_model_path(bg_model),
                 &svgit_bgremove::BgConfig {
                     threshold: bg_threshold,
                 },

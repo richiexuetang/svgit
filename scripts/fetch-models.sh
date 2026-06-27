@@ -30,10 +30,16 @@ fetch() {
 sha() { shasum -a 256 "$1" | awk '{print $1}'; }
 have_sha() { [[ "$(sha "$1")" == "$2" ]]; }
 
-# u2netp — lightweight (~4.6 MB) salient-object net used for background removal.
+# u2netp — lightweight (~4.6 MB) salient-object net for background removal (Fast).
 fetch "u2netp.onnx" \
   "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx" \
   "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8"
+
+# isnet-general-use — high-accuracy DIS matting (~178 MB) for the "High" quality
+# background-removal option (sharper fine detail like fur/hair).
+fetch "isnet-general-use.onnx" \
+  "https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx" \
+  "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a"
 
 # FastSAM-x — class-agnostic "segment everything" (YOLOv8-seg, ~289 MB) used by
 # the Segment engine. Large; only needed for object-layer output.

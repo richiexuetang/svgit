@@ -2,17 +2,17 @@
 //! u2netp weights (`scripts/fetch-models.sh`) and a real image; CI without
 //! either simply skips it.
 //!
-//! Run with:
-//!   SVGIT_TEST_IMAGE=/path/to/photo.jpg \
+//! Run with (SVGIT_TEST_MODEL = u2netp | isnet):
+//!   SVGIT_TEST_IMAGE=/path/to/photo.jpg SVGIT_TEST_MODEL=isnet \
 //!     cargo test -p svgit-bgremove --test inference -- --ignored --nocapture
 //!
-//! It writes `target/bg-matte.png` (the alpha matte) and `target/bg-cutout.png`
-//! (the RGBA result) for eyeballing.
+//! It writes `bg-matte-<model>.png` (the alpha matte) and `bg-cutout-<model>.png`
+//! (the RGBA result) into SVGIT_TEST_OUT for eyeballing.
 
-use svgit_bgremove::{default_model_path, remove_background, BgConfig};
+use svgit_bgremove::{default_model_path, remove_background, BgConfig, Model};
 
 #[test]
-#[ignore = "needs u2netp weights + SVGIT_TEST_IMAGE"]
+#[ignore = "needs weights + SVGIT_TEST_IMAGE"]
 fn cutout_splits_foreground_from_background() {
     let img_path = match std::env::var("SVGIT_TEST_IMAGE") {
         Ok(p) => p,
@@ -21,18 +21,20 @@ fn cutout_splits_foreground_from_background() {
             return;
         }
     };
-    let model = default_model_path();
+    let model_name = std::env::var("SVGIT_TEST_MODEL").unwrap_or_else(|_| "u2netp".into());
+    let model = Model::parse(&model_name);
+    let path = default_model_path(model);
     assert!(
-        model.exists(),
+        path.exists(),
         "model missing at {} — run scripts/fetch-models.sh",
-        model.display()
+        path.display()
     );
 
     let decoded = image::open(&img_path).expect("decode test image").to_rgba8();
     let (w, h) = (decoded.width() as usize, decoded.height() as usize);
     let rgba = decoded.into_raw();
 
-    let out = remove_background(&rgba, w, h, &model, &BgConfig::default())
+    let out = remove_background(&rgba, w, h, model, &path, &BgConfig::default())
         .expect("remove_background should succeed");
     assert_eq!(out.len(), rgba.len(), "output is same-sized RGBA");
 
@@ -64,8 +66,8 @@ fn cutout_splits_foreground_from_background() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir());
     let matte: Vec<u8> = (0..w * h).map(|i| out[i * 4 + 3]).collect();
-    let matte_path = out_dir.join("bg-matte.png");
-    let cutout_path = out_dir.join("bg-cutout.png");
+    let matte_path = out_dir.join(format!("bg-matte-{model_name}.png"));
+    let cutout_path = out_dir.join(format!("bg-cutout-{model_name}.png"));
     image::save_buffer(&matte_path, &matte, w as u32, h as u32, image::ColorType::L8)
         .expect("write matte png");
     image::save_buffer(&cutout_path, &out, w as u32, h as u32, image::ColorType::Rgba8)

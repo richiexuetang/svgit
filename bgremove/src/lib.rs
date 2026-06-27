@@ -1,17 +1,16 @@
 //! svgit-bgremove — ONNX background removal (Level 3 ML layer).
 //!
-//! Wraps the **u2netp** salient-object model: given an RGBA raster, it runs the
-//! net to produce a single-channel saliency matte, then returns a copy of the
-//! raster whose alpha channel carries that matte (so the existing alpha-aware
-//! tracer drops the background for free).
+//! Runs a salient-object model over an RGBA raster to produce a single-channel
+//! matte, then returns a copy of the raster whose alpha channel carries that
+//! matte (so the existing alpha-aware tracer drops the background for free).
+//!
+//! Two models are supported (see [`Model`]): **u2netp** (lightweight, fast) and
+//! **isnet-general-use** (heavier, much sharper on fine detail). They differ
+//! only in input size and normalization; the pre/post-processing is otherwise
+//! shared.
 //!
 //! The heavy `ort`/onnxruntime dependency lives only here, keeping the
 //! `svgit-pipeline` crate dependency-free.
-//!
-//! Layout:
-//! - [`remove_background`] is the one entry point the service calls.
-//! - [`to_input_tensor`] / [`matte_from_output`] are the pure numeric steps,
-//!   unit-tested without touching the model.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -19,23 +18,64 @@ use std::sync::{Mutex, OnceLock};
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::Tensor;
 
-/// u2netp consumes a fixed 320×320 RGB tensor.
-const SIDE: usize = 320;
-/// ImageNet normalization (u2net's `ToTensorLab`): scale by the image max, then
-/// `(x - mean) / std` per channel.
-const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
-const STD: [f32; 3] = [0.229, 0.224, 0.225];
+/// Which salient-object model to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Model {
+    /// u2netp — lightweight (~4.6 MB), 320×320, ImageNet normalization. Fast.
+    U2netp,
+    /// isnet-general-use — high accuracy (~178 MB), 1024×1024, ±0.5
+    /// normalization. Sharper edges/fine detail, slower.
+    Isnet,
+}
 
-/// Default model filename. Fetched by `scripts/fetch-models.sh`.
-pub const MODEL_FILENAME: &str = "u2netp.onnx";
+impl Model {
+    /// Map a form value to a model; anything unrecognized falls back to the
+    /// fast default so a bad param can never 500.
+    pub fn parse(s: &str) -> Model {
+        match s {
+            "isnet" | "high" => Model::Isnet,
+            _ => Model::U2netp,
+        }
+    }
 
-/// Where the service looks for weights: `$SVGIT_MODEL_DIR/u2netp.onnx`,
-/// defaulting to `./models/u2netp.onnx`.
-pub fn default_model_path() -> PathBuf {
+    pub fn filename(self) -> &'static str {
+        match self {
+            Model::U2netp => "u2netp.onnx",
+            Model::Isnet => "isnet-general-use.onnx",
+        }
+    }
+
+    /// Square input side the model expects.
+    fn side(self) -> usize {
+        match self {
+            Model::U2netp => 320,
+            Model::Isnet => 1024,
+        }
+    }
+
+    /// Per-channel normalization mean (applied after scaling by the image max).
+    fn mean(self) -> [f32; 3] {
+        match self {
+            Model::U2netp => [0.485, 0.456, 0.406], // ImageNet (u2net ToTensorLab)
+            Model::Isnet => [0.5, 0.5, 0.5],        // DIS GOSNormalize
+        }
+    }
+
+    fn std(self) -> [f32; 3] {
+        match self {
+            Model::U2netp => [0.229, 0.224, 0.225],
+            Model::Isnet => [1.0, 1.0, 1.0],
+        }
+    }
+}
+
+/// Where the service looks for the chosen model's weights:
+/// `$SVGIT_MODEL_DIR/<filename>`, defaulting to `./models/<filename>`.
+pub fn default_model_path(model: Model) -> PathBuf {
     let dir = std::env::var_os("SVGIT_MODEL_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("models"));
-    dir.join(MODEL_FILENAME)
+    dir.join(model.filename())
 }
 
 /// Tuning for the matte → alpha conversion.
@@ -56,13 +96,19 @@ impl Default for BgConfig {
     }
 }
 
-/// Process-wide model session. onnxruntime's Rust `run` needs `&mut`, so we
-/// serialize inference behind a mutex; the converter pool already caps how many
-/// requests reach this at once.
-static SESSION: OnceLock<Mutex<Session>> = OnceLock::new();
+/// Process-wide model sessions, one cache per model so switching between them
+/// doesn't reload (or clobber) the other. onnxruntime's Rust `run` needs `&mut`,
+/// so each is serialized behind a mutex; the converter pool already caps how
+/// many requests reach this at once.
+static SESSION_U2NETP: OnceLock<Mutex<Session>> = OnceLock::new();
+static SESSION_ISNET: OnceLock<Mutex<Session>> = OnceLock::new();
 
-fn session(model_path: &Path) -> Result<&'static Mutex<Session>, String> {
-    if let Some(s) = SESSION.get() {
+fn session(model: Model, model_path: &Path) -> Result<&'static Mutex<Session>, String> {
+    let cell = match model {
+        Model::U2netp => &SESSION_U2NETP,
+        Model::Isnet => &SESSION_ISNET,
+    };
+    if let Some(s) = cell.get() {
         return Ok(s);
     }
     if !model_path.exists() {
@@ -81,17 +127,18 @@ fn session(model_path: &Path) -> Result<&'static Mutex<Session>, String> {
         .commit_from_file(model_path)
         .map_err(|e| format!("loading {}: {e}", model_path.display()))?;
     // First writer wins; a racing loser's session is simply dropped.
-    let _ = SESSION.set(Mutex::new(built));
-    Ok(SESSION.get().expect("session just set"))
+    let _ = cell.set(Mutex::new(built));
+    Ok(cell.get().expect("session just set"))
 }
 
-/// Remove the background from an RGBA buffer, returning a new RGBA buffer whose
-/// alpha is the (thresholded) saliency matte multiplied into any pre-existing
-/// alpha. RGB is untouched.
+/// Remove the background from an RGBA buffer using `model`, returning a new RGBA
+/// buffer whose alpha is the (thresholded) saliency matte multiplied into any
+/// pre-existing alpha. RGB is untouched.
 pub fn remove_background(
     rgba: &[u8],
     width: usize,
     height: usize,
+    model: Model,
     model_path: &Path,
     cfg: &BgConfig,
 ) -> Result<Vec<u8>, String> {
@@ -104,7 +151,9 @@ pub fn remove_background(
         return Err("empty or truncated RGBA buffer".to_string());
     }
 
-    // --- resize source RGB → 320×320 (Lanczos, matching rembg) ---
+    let side = model.side();
+
+    // --- resize source RGB → side×side (Lanczos, matching rembg) ---
     let mut rgb = vec![0u8; n3];
     for i in 0..n {
         rgb[i * 3] = rgba[i * 4];
@@ -115,17 +164,17 @@ pub fn remove_background(
         .ok_or("could not wrap RGB buffer")?;
     let small = image::imageops::resize(
         &src,
-        SIDE as u32,
-        SIDE as u32,
+        side as u32,
+        side as u32,
         image::imageops::FilterType::Lanczos3,
     );
 
-    // --- normalize → NCHW [1,3,320,320] ---
-    let input = to_input_tensor(small.as_raw());
+    // --- normalize → NCHW [1,3,side,side] ---
+    let input = to_input_tensor(small.as_raw(), model);
 
-    // --- run u2netp --- (scoped so the model lock releases before compositing)
+    // --- run the model --- (scoped so the lock releases before compositing)
     let matte = {
-        let lock = session(model_path)?;
+        let lock = session(model, model_path)?;
         let mut sess = lock
             .lock()
             .map_err(|_| "model session poisoned".to_string())?;
@@ -134,22 +183,22 @@ pub fn remove_background(
             .first()
             .map(|i| i.name.clone())
             .unwrap_or_else(|| "input.1".to_string());
-        let tensor = Tensor::from_array((vec![1i64, 3, SIDE as i64, SIDE as i64], input))
+        let tensor = Tensor::from_array((vec![1i64, 3, side as i64, side as i64], input))
             .map_err(|e| format!("building input tensor: {e}"))?;
         let outputs = sess
             .run(ort::inputs![in_name => tensor])
-            .map_err(|e| format!("u2netp inference: {e}"))?;
+            .map_err(|e| format!("matting inference: {e}"))?;
         let (oshape, odata) = outputs[0]
             .try_extract_tensor::<f32>()
             .map_err(|e| format!("reading saliency output: {e}"))?;
-        if odata.len() < SIDE * SIDE {
+        if odata.len() < side * side {
             return Err(format!("unexpected saliency output shape {oshape:?}"));
         }
-        matte_from_output(&odata[..SIDE * SIDE])
+        matte_from_output(&odata[..side * side])
     };
 
-    // --- resize matte 320×320 → original, then composite into alpha ---
-    let mbuf = image::ImageBuffer::<image::Luma<u8>, _>::from_raw(SIDE as u32, SIDE as u32, matte)
+    // --- resize matte side×side → original, then composite into alpha ---
+    let mbuf = image::ImageBuffer::<image::Luma<u8>, _>::from_raw(side as u32, side as u32, matte)
         .ok_or("could not wrap matte buffer")?;
     let full = image::imageops::resize(
         &mbuf,
@@ -179,16 +228,18 @@ pub fn remove_background(
     Ok(out)
 }
 
-/// Normalize a 320×320 RGB byte buffer into a u2net NCHW f32 tensor.
-fn to_input_tensor(rgb: &[u8]) -> Vec<f32> {
-    let hw = SIDE * SIDE;
-    // u2net divides by the image's own max, not a fixed 255.
+/// Normalize a `side×side` RGB byte buffer into the model's NCHW f32 tensor.
+fn to_input_tensor(rgb: &[u8], model: Model) -> Vec<f32> {
+    let side = model.side();
+    let hw = side * side;
+    let (mean, std) = (model.mean(), model.std());
+    // Both nets divide by the image's own max, not a fixed 255.
     let max = rgb.iter().copied().max().unwrap_or(1).max(1) as f32;
     let mut t = vec![0f32; 3 * hw];
     for p in 0..hw {
         for c in 0..3 {
             let v = rgb[p * 3 + c] as f32 / max;
-            t[c * hw + p] = (v - MEAN[c]) / STD[c];
+            t[c * hw + p] = (v - mean[c]) / std[c];
         }
     }
     t
@@ -219,23 +270,35 @@ mod tests {
 
     #[test]
     fn input_tensor_is_normalized_nchw() {
-        // A solid mid-gray 320×320 image.
-        let rgb = vec![128u8; SIDE * SIDE * 3];
-        let t = to_input_tensor(&rgb);
-        assert_eq!(t.len(), 3 * SIDE * SIDE);
+        // A solid mid-gray u2netp-sized image.
+        let side = Model::U2netp.side();
+        let rgb = vec![128u8; side * side * 3];
+        let t = to_input_tensor(&rgb, Model::U2netp);
+        assert_eq!(t.len(), 3 * side * side);
         // max == 128, so v == 1.0 everywhere; channel 0 == (1-0.485)/0.229.
-        let expect_r = (1.0 - MEAN[0]) / STD[0];
+        let expect_r = (1.0 - Model::U2netp.mean()[0]) / Model::U2netp.std()[0];
         assert!((t[0] - expect_r).abs() < 1e-5, "got {}", t[0]);
         // Plane boundary: first G-plane element uses the green mean/std.
-        let expect_g = (1.0 - MEAN[1]) / STD[1];
-        assert!((t[SIDE * SIDE] - expect_g).abs() < 1e-5);
+        let expect_g = (1.0 - Model::U2netp.mean()[1]) / Model::U2netp.std()[1];
+        assert!((t[side * side] - expect_g).abs() < 1e-5);
+    }
+
+    #[test]
+    fn isnet_tensor_uses_pm_half_normalization() {
+        // ISNet: (v - 0.5) / 1.0. A white (max) pixel → 0.5.
+        let side = Model::Isnet.side();
+        let rgb = vec![255u8; side * side * 3];
+        let t = to_input_tensor(&rgb, Model::Isnet);
+        assert_eq!(t.len(), 3 * side * side);
+        assert!((t[0] - 0.5).abs() < 1e-5, "got {}", t[0]);
     }
 
     #[test]
     fn input_tensor_handles_all_black() {
         // max clamps to 1 (not 0) — no NaN/inf.
-        let rgb = vec![0u8; SIDE * SIDE * 3];
-        let t = to_input_tensor(&rgb);
+        let side = Model::U2netp.side();
+        let rgb = vec![0u8; side * side * 3];
+        let t = to_input_tensor(&rgb, Model::U2netp);
         assert!(t.iter().all(|v| v.is_finite()));
     }
 
@@ -256,23 +319,33 @@ mod tests {
     }
 
     #[test]
+    fn model_parse_defaults_to_fast() {
+        assert_eq!(Model::parse("isnet"), Model::Isnet);
+        assert_eq!(Model::parse("high"), Model::Isnet);
+        assert_eq!(Model::parse("u2netp"), Model::U2netp);
+        assert_eq!(Model::parse("nonsense"), Model::U2netp);
+    }
+
+    #[test]
     fn remove_background_rejects_overflowing_dims() {
         // Dimensions whose product (or product*4) overflows usize must error out
         // cleanly, before any allocation or model access — never panic.
         let model = Path::new("/nonexistent/u2netp.onnx");
         let cfg = BgConfig::default();
-        // width*height overflows.
-        assert!(remove_background(&[], usize::MAX, 2, model, &cfg).is_err());
-        // width*height fits but *4 overflows.
-        assert!(remove_background(&[], usize::MAX / 3, 1, model, &cfg).is_err());
+        assert!(remove_background(&[], usize::MAX, 2, Model::U2netp, model, &cfg).is_err());
+        assert!(remove_background(&[], usize::MAX / 3, 1, Model::U2netp, model, &cfg).is_err());
     }
 
     #[test]
-    fn default_model_path_honors_env() {
+    fn default_model_path_honors_env_and_model() {
         std::env::set_var("SVGIT_MODEL_DIR", "/tmp/svgit-models");
         assert_eq!(
-            default_model_path(),
+            default_model_path(Model::U2netp),
             PathBuf::from("/tmp/svgit-models").join("u2netp.onnx")
+        );
+        assert_eq!(
+            default_model_path(Model::Isnet),
+            PathBuf::from("/tmp/svgit-models").join("isnet-general-use.onnx")
         );
         std::env::remove_var("SVGIT_MODEL_DIR");
     }
