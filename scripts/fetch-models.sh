@@ -35,4 +35,10 @@ fetch "u2netp.onnx" \
   "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx" \
   "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8"
 
+# FastSAM-x — class-agnostic "segment everything" (YOLOv8-seg, ~289 MB) used by
+# the Segment engine. Large; only needed for object-layer output.
+fetch "FastSAM-x.onnx" \
+  "https://huggingface.co/badongtakla/fastsam-onnx/resolve/main/FastSAM-x.onnx" \
+  "2fd54062159a4f014aea904ebefea55ce049bcf4d991ac070b3fe6da323010ca"
+
 echo "All models ready in $DEST/"

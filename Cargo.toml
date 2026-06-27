@@ -6,5 +6,6 @@ members = [
     "service",
     "pipeline",
     "bgremove",
+    "objseg",
 ]
 resolver = "2"

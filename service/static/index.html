@@ -241,6 +241,7 @@
         <div class="seg" id="engine" data-default="vtracer">
           <button data-v="vtracer" class="active">VTracer</button>
           <button data-v="owned">Owned</button>
+          <button data-v="segment">Segment</button>
         </div>
       </div>
     </div>
@@ -257,6 +258,18 @@
       <div class="field bgremove-only">
         <label>Cutoff <span class="val" id="bg_threshold-v"></span><span class="hint">tighter →</span></label>
         <input type="range" id="bg_threshold" min="0" max="0.95" step="0.05" value="0.5">
+      </div>
+    </div>
+
+    <div class="group segment-only">
+      <h3>Segmentation <span class="hint" style="text-transform:none;letter-spacing:0">FastSAM</span></h3>
+      <div class="field">
+        <label>Confidence <span class="val" id="seg_conf-v"></span><span class="hint">fewer ←→ more</span></label>
+        <input type="range" id="seg_conf" min="0.1" max="0.9" step="0.05" value="0.4">
+      </div>
+      <div class="field">
+        <label>Max objects <span class="val" id="seg_max-v"></span></label>
+        <input type="range" id="seg_max" min="1" max="128" step="1" value="48">
       </div>
     </div>
 
@@ -285,15 +298,15 @@
         <label>Colors <span class="val" id="colors-v"></span></label>
         <input type="range" id="colors" min="2" max="64" step="1" value="16">
       </div>
-      <div class="field owned-only">
+      <div class="field pipeline-only">
         <label>Simplify <span class="val" id="simplify-v"></span></label>
         <input type="range" id="simplify" min="0" max="5" step="0.1" value="1.2">
       </div>
-      <div class="field owned-only">
+      <div class="field pipeline-only">
         <label>Min region <span class="val" id="min_region-v"></span></label>
         <input type="range" id="min_region" min="0" max="64" step="1" value="8">
       </div>
-      <div class="field owned-only">
+      <div class="field pipeline-only">
         <label>Curves <span class="hint">bézier fit</span></label>
         <div class="seg" id="curve" data-default="off">
           <button data-v="off" class="active">Off</button>
@@ -409,10 +422,10 @@ let debounceTimer = null;
 let inflight = null;      // AbortController for the active request
 
 // ---- sliders with live value labels ----
-const sliders = ['bg_threshold','colors','simplify','min_region','curve_error','curve_corner','filter_speckle','color_precision','layer_difference',
+const sliders = ['bg_threshold','seg_conf','seg_max','colors','simplify','min_region','curve_error','curve_corner','filter_speckle','color_precision','layer_difference',
                  'corner_threshold','length_threshold','splice_threshold','max_iterations','path_precision'];
-// Sliders that belong to the owned pipeline / preprocess, not a vtracer preset.
-const NON_PRESET_SLIDERS = new Set(['bg_threshold','colors','simplify','min_region','curve_error','curve_corner']);
+// Sliders that belong to the owned pipeline / preprocess / segmentation, not a vtracer preset.
+const NON_PRESET_SLIDERS = new Set(['bg_threshold','seg_conf','seg_max','colors','simplify','min_region','curve_error','curve_corner']);
 for (const id of sliders) {
   const el = $(id), label = $(id + '-v');
   const sync = () => { label.textContent = el.value; };
@@ -441,21 +454,28 @@ for (const id of ['engine','bg_remove','quantize','curve','color_mode','hierarch
 }
 
 function reflectConditional() {
-  const owned = segValue('engine') === 'owned';
+  const engine = segValue('engine');
+  const owned = engine === 'owned';
+  const segment = engine === 'segment';
+  const pipeline = owned || segment; // both drive the owned trace backend
   const isColor = segValue('color_mode') === 'color';
   const isSpline = segValue('mode') === 'spline';
   const isQuant = segValue('quantize') === 'on';
-  const curveOn = owned && segValue('curve') === 'on';
+  const curveOn = pipeline && segValue('curve') === 'on';
   const bgOn = owned && segValue('bg_remove') === 'on';
   // The cutoff slider only matters when background removal is active (owned only).
   document.querySelectorAll('.bgremove-only').forEach(e => e.classList.toggle('hide', !bgOn));
-  // VTracer-specific groups are irrelevant under the owned engine.
-  document.querySelectorAll('.vtracer-only').forEach(e => e.classList.toggle('hide', owned));
+  // VTracer-specific groups are irrelevant under the owned/segment engines.
+  document.querySelectorAll('.vtracer-only').forEach(e => e.classList.toggle('hide', pipeline));
+  // Preprocess (bg removal) is owned-only; FastSAM knobs are segment-only.
   document.querySelectorAll('.owned-only').forEach(e => e.classList.toggle('hide', !owned));
-  // Curve-fit knobs only matter when the owned engine is fitting curves.
+  document.querySelectorAll('.segment-only').forEach(e => e.classList.toggle('hide', !segment));
+  // Shared trace knobs (simplify, min region, curves) apply to both.
+  document.querySelectorAll('.pipeline-only').forEach(e => e.classList.toggle('hide', !pipeline));
+  // Curve-fit knobs only matter when the owned/segment engine is fitting curves.
   document.querySelectorAll('.curve-only').forEach(e => e.classList.toggle('hide', !curveOn));
-  // The owned engine always quantizes, so the Colors slider shows for it too.
-  document.querySelectorAll('.quantize-only').forEach(e => e.classList.toggle('hide', !(owned || isQuant)));
+  // The owned/segment engines always quantize, so Colors shows for them too.
+  document.querySelectorAll('.quantize-only').forEach(e => e.classList.toggle('hide', !(pipeline || isQuant)));
   document.querySelectorAll('.color-only').forEach(e => e.classList.toggle('hide', !isColor));
   document.querySelectorAll('.spline-only').forEach(e => e.classList.toggle('hide', !isSpline));
 }
@@ -549,8 +569,12 @@ function renderResult(svgText, ms) {
   $('downloadBtn').disabled = false;
   const bytes = new Blob([svgText]).size;
   const paths = (svgText.match(/<path/g) || []).length;
+  // Layered (Segment) output groups paths under <g data-object>; surface the
+  // object count when present.
+  const objects = (svgText.match(/data-object="object-/g) || []).length;
+  const objBit = objects ? ` · <b>${objects}</b> objects` : '';
   $('stats').innerHTML =
-    `${w}×${h} · <b>${paths}</b> paths · <b>${fmtBytes(bytes)}</b> · <b>${ms} ms</b>`;
+    `${w}×${h} · <b>${paths}</b> paths${objBit} · <b>${fmtBytes(bytes)}</b> · <b>${ms} ms</b>`;
 }
 
 function fmtBytes(n) {

@@ -133,3 +133,54 @@ pub fn to_svg(width: usize, height: usize, background: Option<[u8; 3]>, regions:
     s.push_str("</svg>\n");
     s
 }
+
+/// Escape the few characters that aren't legal inside a double-quoted XML
+/// attribute value. Layer labels are svgit-generated and simple, so this is
+/// defensive rather than load-bearing.
+fn attr_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Build a full SVG document where each layer becomes a `<g data-object="...">`
+/// group, emitted bottom-first. Within a layer, same-color subpaths merge into
+/// one `<path>` (deterministic via BTreeMap) exactly as [`to_svg`] does — so an
+/// object made of several quantized colors stays a single group of color paths.
+pub fn to_svg_layered(width: usize, height: usize, layers: &[(String, Vec<Region>)]) -> String {
+    let mut s = String::with_capacity(2048);
+    s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    s.push_str("<!-- Generator: svgit owned pipeline (layered) -->\n");
+    let _ = writeln!(
+        s,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\">"
+    );
+    for (label, regions) in layers {
+        let mut by_color: BTreeMap<[u8; 3], String> = BTreeMap::new();
+        for r in regions {
+            let d = by_color.entry(r.color).or_default();
+            for sp in &r.subpaths {
+                write_subpath(d, sp);
+            }
+        }
+        if by_color.values().all(|d| d.is_empty()) {
+            continue;
+        }
+        let _ = writeln!(s, "<g data-object=\"{}\">", attr_escape(label));
+        for (color, d) in &by_color {
+            if d.is_empty() {
+                continue;
+            }
+            let _ = writeln!(
+                s,
+                "<path d=\"{}\" fill=\"{}\" fill-rule=\"nonzero\"/>",
+                d,
+                hex(*color)
+            );
+        }
+        s.push_str("</g>\n");
+    }
+    s.push_str("</svg>\n");
+    s
+}

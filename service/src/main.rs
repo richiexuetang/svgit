@@ -78,6 +78,8 @@ struct RawParams {
     engine: Option<String>,
     bg_remove: Option<String>,
     bg_threshold: Option<f64>,
+    seg_conf: Option<f64>,
+    seg_max: Option<usize>,
     quantize: Option<String>,
     colors: Option<usize>,
     simplify: Option<f64>,
@@ -134,6 +136,8 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
             "bg_threshold" => {
                 p.bg_threshold = value.parse().ok().filter(|v: &f64| v.is_finite())
             }
+            "seg_conf" => p.seg_conf = value.parse().ok().filter(|v: &f64| v.is_finite()),
+            "seg_max" => p.seg_max = value.parse().ok(),
             "quantize" => p.quantize = Some(value.to_string()),
             "colors" => p.colors = value.parse().ok(),
             "simplify" => p.simplify = value.parse().ok().filter(|v: &f64| v.is_finite()),
@@ -170,17 +174,23 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
     let curve_err = p.curve_error.unwrap_or(2.0).clamp(0.1, 20.0);
     let bg_remove = matches!(p.bg_remove.as_deref(), Some("on") | Some("true") | Some("1"));
     let bg_threshold = p.bg_threshold.unwrap_or(0.5).clamp(0.0, 1.0) as f32;
+    let engine_segment = matches!(p.engine.as_deref(), Some("segment"));
+    let seg_conf = p.seg_conf.unwrap_or(0.4).clamp(0.05, 0.95) as f32;
+    let seg_max = p.seg_max.unwrap_or(48).clamp(1, 256);
 
     // Fail fast on a missing model *before* taking a converter slot — otherwise
     // a misconfigured deploy burns the whole pool on a predictable error.
-    if bg_remove {
-        let model = svgit_bgremove::default_model_path();
-        if !model.exists() {
-            return Err(AppError::internal(format!(
-                "background-removal model not found at {} — run scripts/fetch-models.sh",
-                model.display()
-            )));
-        }
+    if bg_remove && !svgit_bgremove::default_model_path().exists() {
+        return Err(AppError::internal(format!(
+            "background-removal model not found at {} — run scripts/fetch-models.sh",
+            svgit_bgremove::default_model_path().display()
+        )));
+    }
+    if engine_segment && !svgit_objseg::default_model_path().exists() {
+        return Err(AppError::internal(format!(
+            "segmentation model not found at {} — run scripts/fetch-models.sh",
+            svgit_objseg::default_model_path().display()
+        )));
     }
 
     // Limit concurrent CPU-bound conversions. Held until the response is built.
@@ -227,6 +237,57 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
                     threshold: bg_threshold,
                 },
             )?;
+        }
+
+        // Segment engine: FastSAM "segment everything" → per-pixel object ids →
+        // quantize → layered owned trace (one <g> per object).
+        if engine_segment {
+            let npx = (w as usize) * (h as usize);
+            let instances = svgit_objseg::segment_everything(
+                &raw,
+                w as usize,
+                h as usize,
+                &svgit_objseg::default_model_path(),
+                &svgit_objseg::SegConfig {
+                    conf: seg_conf,
+                    max_objects: seg_max,
+                    ..Default::default()
+                },
+            )?;
+            // Resolve overlaps to one id per pixel. Instances are largest-first,
+            // so painting in order lets smaller objects win (land on top).
+            let mut instance_id = vec![0u32; npx];
+            for (i, inst) in instances.iter().enumerate() {
+                let id = (i + 1) as u32;
+                for (p, &m) in inst.mask.iter().enumerate() {
+                    if m != 0 {
+                        instance_id[p] = id;
+                    }
+                }
+            }
+            raw = svgit_pipeline::quantize_rgba(
+                raw,
+                &QuantizeConfig {
+                    num_colors,
+                    ..Default::default()
+                },
+            );
+            return Ok(svgit_pipeline::trace_layered(
+                &raw,
+                w as usize,
+                h as usize,
+                &instance_id,
+                instances.len(),
+                &TraceConfig {
+                    alpha_threshold: 0,
+                    min_area: min_region,
+                    simplify: simplify_eps,
+                    background: false,
+                    curve: curve_on,
+                    corner_threshold: curve_corner,
+                    curve_error: curve_err,
+                },
+            ));
         }
 
         // Owned engine: quantize to N colors then run the fully-owned flat

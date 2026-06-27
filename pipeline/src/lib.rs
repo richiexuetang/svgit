@@ -19,4 +19,4 @@ pub mod svg;
 pub mod trace;
 
 pub use quantize::{quantize_rgba, QuantizeConfig};
-pub use trace::{trace_rgba, TraceConfig};
+pub use trace::{trace_layered, trace_rgba, TraceConfig};
