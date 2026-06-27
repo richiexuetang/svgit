@@ -9,9 +9,10 @@
 use std::collections::HashMap;
 
 use crate::contour::contours_of;
+use crate::curvefit;
 use crate::segment::segment;
 use crate::simplify::simplify_closed;
-use crate::svg::{to_svg, Region};
+use crate::svg::{polygon_subpath, to_svg, Region};
 
 #[derive(Debug, Clone)]
 pub struct TraceConfig {
@@ -23,6 +24,13 @@ pub struct TraceConfig {
     pub simplify: f64,
     /// Emit the largest region as a background rect instead of a full polygon.
     pub background: bool,
+    /// Fit cubic Béziers to the contours instead of emitting polygons.
+    pub curve: bool,
+    /// Corner-detection threshold (degrees) for curve fitting; sharper turns
+    /// stay as crisp corners.
+    pub corner_threshold: f64,
+    /// Curve-fit error tolerance in pixels.
+    pub curve_error: f64,
 }
 
 impl Default for TraceConfig {
@@ -32,6 +40,9 @@ impl Default for TraceConfig {
             min_area: 4,
             simplify: 1.2,
             background: true,
+            curve: false,
+            corner_threshold: 80.0,
+            curve_error: 2.0,
         }
     }
 }
@@ -87,15 +98,24 @@ pub fn trace_rgba(pixels: &[u8], width: usize, height: usize, cfg: &TraceConfig)
         }
         let color = palette[(seg.component_color[c] - 1) as usize];
         let raw_loops = contours_of(&seg.labels, width, height, c as u32, bboxes[c]);
-        let mut loops = Vec::with_capacity(raw_loops.len());
+        let mut subpaths = Vec::with_capacity(raw_loops.len());
         for lp in raw_loops {
+            // Simplify, but never let RDP collapse a real loop to nothing —
+            // fall back to the exact contour so small holes/regions survive.
             let simp = simplify_closed(&lp, cfg.simplify);
-            if simp.len() >= 3 {
-                loops.push(simp);
+            let poly = if simp.len() >= 3 { simp } else { lp };
+            if poly.len() < 3 {
+                continue;
             }
+            let sub = if cfg.curve && poly.len() >= 4 {
+                curvefit::fit_loop(&poly, cfg.corner_threshold, cfg.curve_error)
+            } else {
+                polygon_subpath(&poly)
+            };
+            subpaths.push(sub);
         }
-        if !loops.is_empty() {
-            regions.push(Region { color, loops });
+        if !subpaths.is_empty() {
+            regions.push(Region { color, subpaths });
         }
     }
 
@@ -144,33 +164,6 @@ mod tests {
         assert_eq!(svg.matches("<path").count(), 1);
         assert!(svg.contains("#00ff00"));
         assert!(!svg.contains("<rect"));
-    }
-
-    #[test]
-    fn probe_diagonal_holes_full_pipeline_default_cfg() {
-        // 4x4 background color A with two diagonally-touching holes of color B
-        // at cells (1,1) and (2,2). With default simplify=1.2 the holes get
-        // mangled into a degenerate triangle / dropped.
-        let a = [10u8, 20, 30, 255];
-        let b = [200u8, 100, 50, 255];
-        let mut px = vec![];
-        let layout = [
-            0,0,0,0,
-            0,1,0,0,
-            0,0,1,0,
-            0,0,0,0,
-        ];
-        for &v in &layout {
-            px.extend_from_slice(if v == 0 { &a } else { &b });
-        }
-        // Default cfg has background=true, simplify=1.2, min_area=4.
-        // Use min_area=0 so the 1px holes survive as their own components.
-        let cfg = TraceConfig { min_area: 0, ..Default::default() };
-        let svg = trace_rgba(&px, 4, 4, &cfg);
-        eprintln!("SVG:\n{svg}");
-        // Count distinct fill colors actually drawn.
-        let n_b = svg.matches("#c86432").count(); // b = (200,100,50)
-        eprintln!("paths of color B (the two holes) = {n_b}");
     }
 
     #[test]

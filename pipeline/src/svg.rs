@@ -1,4 +1,5 @@
-//! SVG serialization — stage 5 of the owned pipeline.
+//! SVG serialization — stage 5 of the owned pipeline, plus the geometry types
+//! the contour/curve-fit stages produce.
 //!
 //! Emits one `<path>` per region (holes are extra subpaths in the same path,
 //! rendered with the nonzero fill rule thanks to their opposite winding). An
@@ -8,60 +9,114 @@
 use std::fmt::Write;
 
 type Pt = (i32, i32);
+pub type Ptf = (f64, f64);
+
+/// A single path segment. Polygon output uses only `Line`; curve fitting emits
+/// `Cubic` (two control points + endpoint; the start point is implicit).
+pub enum Seg {
+    Line(Ptf),
+    Cubic(Ptf, Ptf, Ptf),
+}
+
+/// A closed subpath: a start point followed by segments back around to it.
+pub struct Subpath {
+    pub start: Ptf,
+    pub segs: Vec<Seg>,
+}
 
 pub struct Region {
     pub color: [u8; 3],
-    /// Outer loop plus any hole loops, as produced by the contour tracer.
-    pub loops: Vec<Vec<Pt>>,
+    /// Outer subpath plus any hole subpaths.
+    pub subpaths: Vec<Subpath>,
+}
+
+/// Build a closed polygon subpath (all line segments) from integer corners.
+pub fn polygon_subpath(pts: &[Pt]) -> Subpath {
+    let start = (pts[0].0 as f64, pts[0].1 as f64);
+    let segs = pts[1..]
+        .iter()
+        .map(|&p| Seg::Line((p.0 as f64, p.1 as f64)))
+        .collect();
+    Subpath { start, segs }
 }
 
 fn hex(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
 
-fn write_loops(d: &mut String, loops: &[Vec<Pt>]) {
-    for lp in loops {
-        if lp.len() < 3 {
-            continue;
-        }
-        let _ = write!(d, "M{} {}", lp[0].0, lp[0].1);
-        for p in &lp[1..] {
-            let _ = write!(d, "L{} {}", p.0, p.1);
-        }
-        d.push('Z');
+/// Format a coordinate with up to 2 decimals, trimming trailing zeros.
+fn fnum(v: f64) -> String {
+    if !v.is_finite() {
+        return "0".to_string(); // never emit NaN/inf into path data
     }
+    let r = (v * 100.0).round() / 100.0;
+    if r == r.trunc() {
+        format!("{}", r as i64)
+    } else {
+        let s = format!("{r:.2}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+fn write_subpath(d: &mut String, sp: &Subpath) {
+    if sp.segs.len() < 2 {
+        return;
+    }
+    let _ = write!(d, "M{} {}", fnum(sp.start.0), fnum(sp.start.1));
+    for seg in &sp.segs {
+        match seg {
+            Seg::Line(p) => {
+                let _ = write!(d, "L{} {}", fnum(p.0), fnum(p.1));
+            }
+            Seg::Cubic(c1, c2, e) => {
+                let _ = write!(
+                    d,
+                    "C{} {} {} {} {} {}",
+                    fnum(c1.0),
+                    fnum(c1.1),
+                    fnum(c2.0),
+                    fnum(c2.1),
+                    fnum(e.0),
+                    fnum(e.1)
+                );
+            }
+        }
+    }
+    d.push('Z');
 }
 
 /// Build a full SVG document from regions, optionally laying the largest region
 /// down as a background rectangle.
-pub fn to_svg(
-    width: usize,
-    height: usize,
-    background: Option<[u8; 3]>,
-    regions: &[Region],
-) -> String {
-    let mut s = String::with_capacity(1024 + regions.len() * 64);
+pub fn to_svg(width: usize, height: usize, background: Option<[u8; 3]>, regions: &[Region]) -> String {
+    let mut s = String::with_capacity(1024 + regions.len() * 96);
     s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     s.push_str("<!-- Generator: svgit owned pipeline -->\n");
-    let _ = write!(
+    let _ = writeln!(
         s,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\">\n"
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\">"
     );
     if let Some(bg) = background {
-        let _ = write!(
+        let _ = writeln!(
             s,
-            "<rect width=\"{width}\" height=\"{height}\" fill=\"{}\"/>\n",
+            "<rect width=\"{width}\" height=\"{height}\" fill=\"{}\"/>",
             hex(bg)
         );
     }
     let mut d = String::new();
     for r in regions {
         d.clear();
-        write_loops(&mut d, &r.loops);
+        for sp in &r.subpaths {
+            write_subpath(&mut d, sp);
+        }
         if d.is_empty() {
             continue;
         }
-        let _ = write!(s, "<path d=\"{}\" fill=\"{}\"/>\n", d, hex(r.color));
+        let _ = writeln!(
+            s,
+            "<path d=\"{}\" fill=\"{}\" fill-rule=\"nonzero\"/>",
+            d,
+            hex(r.color)
+        );
     }
     s.push_str("</svg>\n");
     s

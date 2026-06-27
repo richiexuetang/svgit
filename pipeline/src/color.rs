@@ -56,7 +56,7 @@ pub fn rgb_to_lab(r: u8, g: u8, b: u8) -> [f32; 3] {
     let (rl, gl, bl) = (srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b));
     let x = 0.4124564 * rl + 0.3575761 * gl + 0.1804375 * bl;
     let y = 0.2126729 * rl + 0.7151522 * gl + 0.0721750 * bl;
-    let z = 0.0193339 * rl + 0.1191920 * gl + 0.9503041 * bl;
+    let z = 0.0193339 * rl + 0.119_192 * gl + 0.9503041 * bl;
     let fx = lab_f(x / XN);
     let fy = lab_f(y / YN);
     let fz = lab_f(z / ZN);
@@ -74,7 +74,7 @@ pub fn lab_to_rgb(lab: [f32; 3]) -> [u8; 3] {
     let y = YN * lab_finv(fy);
     let z = ZN * lab_finv(fz);
     let rl = 3.2404542 * x - 1.5371385 * y - 0.4985314 * z;
-    let gl = -0.9692660 * x + 1.8760108 * y + 0.0415560 * z;
+    let gl = -0.969_266 * x + 1.8760108 * y + 0.0415560 * z;
     let bl = 0.0556434 * x - 0.2040259 * y + 1.0572252 * z;
     [linear_to_srgb(rl), linear_to_srgb(gl), linear_to_srgb(bl)]
 }

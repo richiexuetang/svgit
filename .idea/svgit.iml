@@ -5,6 +5,7 @@
       <sourceFolder url="file://$MODULE_DIR$/cmdapp/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/webapp/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/pipeline/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/pipeline/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/pipeline/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/service/examples" isTestSource="false" />

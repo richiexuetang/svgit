@@ -99,14 +99,3 @@ mod tests {
         assert_eq!(s.len(), 4);
     }
 }
-
-#[cfg(test)]
-mod ztmp_drop {
-    use super::*;
-    #[test]
-    fn ztmp_square_collapses_under_big_eps() {
-        let sq = vec![(0,0),(1,0),(1,1),(0,1)];
-        let s = simplify_closed(&sq, 10.0);
-        eprintln!("ZTMP-DROP len={} pts={:?}", s.len(), s);
-    }
-}

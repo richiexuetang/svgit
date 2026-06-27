@@ -119,10 +119,13 @@ impl UnionFind {
 }
 
 impl Segmentation {
-    /// Merge every opaque component whose area is below `min_area` into its
-    /// adjacent opaque component with the largest area. Components are processed
-    /// smallest-first so speckles fold into substantial neighbours. Relabels in
-    /// place and compacts component ids. A `min_area` of 0 or 1 is a no-op.
+    /// Best-effort merge of undersized opaque components into a larger
+    /// neighbour. Each opaque component below `min_area` is folded (smallest
+    /// first, cascading via union-find) into its largest adjacent opaque
+    /// component. This is best-effort, not a guarantee: a small cluster with no
+    /// larger opaque neighbour (e.g. a tiny blob surrounded only by transparency)
+    /// has nothing to merge into and is left as-is. Relabels in place and
+    /// compacts component ids. A `min_area` of 0 or 1 is a no-op.
     pub fn merge_small(&mut self, min_area: u32) {
         if min_area <= 1 || self.num_components <= 1 {
             return;

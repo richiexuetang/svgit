@@ -278,6 +278,13 @@
         <label>Min region <span class="val" id="min_region-v"></span></label>
         <input type="range" id="min_region" min="0" max="64" step="1" value="8">
       </div>
+      <div class="field owned-only">
+        <label>Curves <span class="hint">bézier fit</span></label>
+        <div class="seg" id="curve" data-default="off">
+          <button data-v="off" class="active">Off</button>
+          <button data-v="on">On</button>
+        </div>
+      </div>
     </div>
 
     <div class="group vtracer-only">
@@ -399,11 +406,11 @@ function setSeg(id, v) {
   $(id).querySelectorAll('button').forEach(b =>
     b.classList.toggle('active', b.dataset.v === v));
 }
-for (const id of ['engine','quantize','color_mode','hierarchical','mode']) {
+for (const id of ['engine','quantize','curve','color_mode','hierarchical','mode']) {
   $(id).querySelectorAll('button').forEach(btn => {
     btn.addEventListener('click', () => {
       setSeg(id, btn.dataset.v);
-      if (id !== 'quantize' && id !== 'engine') markCustom();
+      if (id !== 'quantize' && id !== 'engine' && id !== 'curve') markCustom();
       reflectConditional();
       convertNow();
     });
@@ -445,6 +452,7 @@ function gatherParams() {
   const p = {
     engine: segValue('engine'),
     quantize: segValue('quantize'),
+    curve: segValue('curve'),
     color_mode: segValue('color_mode'),
     hierarchical: segValue('hierarchical'),
     mode: segValue('mode'),

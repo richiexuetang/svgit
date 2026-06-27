@@ -80,6 +80,7 @@ struct RawParams {
     colors: Option<usize>,
     simplify: Option<f64>,
     min_region: Option<u32>,
+    curve: Option<String>,
     color_mode: Option<String>,
     hierarchical: Option<String>,
     mode: Option<String>,
@@ -129,6 +130,7 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
             "colors" => p.colors = value.parse().ok(),
             "simplify" => p.simplify = value.parse().ok().filter(|v: &f64| v.is_finite()),
             "min_region" => p.min_region = value.parse().ok(),
+            "curve" => p.curve = Some(value.to_string()),
             "color_mode" => p.color_mode = Some(value.to_string()),
             "hierarchical" => p.hierarchical = Some(value.to_string()),
             "mode" => p.mode = Some(value.to_string()),
@@ -153,6 +155,7 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
     let engine_owned = matches!(p.engine.as_deref(), Some("owned"));
     let simplify_eps = p.simplify.unwrap_or(1.2).clamp(0.0, 10.0);
     let min_region = p.min_region.unwrap_or(4).min(4096);
+    let curve_on = matches!(p.curve.as_deref(), Some("on") | Some("true") | Some("1"));
 
     // Limit concurrent CPU-bound conversions. Held until the response is built.
     let _permit = convert_slots()
@@ -203,6 +206,9 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
                     min_area: min_region,
                     simplify: simplify_eps,
                     background: true,
+                    curve: curve_on,
+                    corner_threshold: 80.0,
+                    curve_error: 2.0,
                 },
             ));
         }

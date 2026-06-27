@@ -80,11 +80,13 @@ pub fn contours_of(
         let start0 = edges[e0].0;
         let mut pts: Vec<Pt> = Vec::new();
         let mut cur = e0;
+        let mut closed = false;
         loop {
             used[cur] = true;
             pts.push(edges[cur].0);
             let end = edges[cur].1;
             if end == start0 {
+                closed = true;
                 break;
             }
             let din = unit(edges[cur].0, end);
@@ -121,10 +123,13 @@ pub fn contours_of(
                 None => break,
             }
         }
-        if pts.len() >= 4 {
-            loops.push(collapse_collinear(&pts));
-        } else if !pts.is_empty() {
-            loops.push(pts);
+        // Only emit a loop that actually closed; an early break (dead end)
+        // would otherwise produce an unclosed, malformed polygon.
+        if closed && pts.len() >= 4 {
+            let collapsed = collapse_collinear(&pts);
+            if collapsed.len() >= 3 {
+                loops.push(collapsed);
+            }
         }
     }
 
@@ -195,239 +200,6 @@ mod tests {
         let mut areas = [a0.abs(), a1.abs()];
         areas.sort_unstable();
         assert_eq!(areas, [2, 18]);
-    }
-
-    fn closes_ok(pts: &[Pt]) -> bool {
-        // Re-derive edges from the returned loop and confirm it forms a single
-        // closed polyline of nonzero area with no repeated vertex (no pinch).
-        pts.len() >= 3 && signed_area(pts) != 0
-    }
-
-    #[test]
-    fn probe_pinch_diagonal_hole_touch() {
-        // 3x3. label 0 everywhere except the two cells (1,0) and (0,1) are label 9,
-        // and center (1,1) is label 0. This makes label 0 a shape whose boundary
-        // pinches at corner (1,1)... actually let's lay out explicitly.
-        // Grid (row-major), label per cell:
-        //  0 9 0
-        //  9 0 0
-        //  0 0 0
-        // Is label 0 4-connected? (0,0) is isolated by 9 at right and 9 at below
-        // -> (0,0) connects to nothing of label 0 except diagonally. So (0,0) is
-        // its own component under 4-conn. The rest of label 0 is one component.
-        let labels = vec![0, 9, 0, 9, 0, 0, 0, 0, 0];
-        // Trace the BIG component. Its label value here is 0 but (0,0) is also 0 —
-        // contours_of keys purely on label value, NOT connectivity. So it will
-        // treat ALL cells == 0 as "inside", including the disconnected (0,0).
-        let loops = contours_of(&labels, 3, 3, 0, (0, 0, 2, 2));
-        eprintln!("PINCH loops = {}", loops.len());
-        for (i, l) in loops.iter().enumerate() {
-            eprintln!("  loop[{i}] len={} area2={} pts={:?}", l.len(), signed_area(l), l);
-        }
-        for l in &loops {
-            assert!(closes_ok(l), "loop not closed/degenerate: {:?}", l);
-        }
-    }
-
-    #[test]
-    fn probe_checkerboard_pinch_two_diagonal_cells() {
-        // Two cells of the same label touching only at a corner:
-        //  0 9
-        //  9 0
-        // Both 0-cells share label 0; contours_of treats both as inside.
-        // Their boundaries meet at the center corner (1,1) -> pinch point.
-        let labels = vec![0, 9, 9, 0];
-        let loops = contours_of(&labels, 2, 2, 0, (0, 0, 1, 1));
-        eprintln!("CHECKER loops = {}", loops.len());
-        for (i, l) in loops.iter().enumerate() {
-            eprintln!("  loop[{i}] len={} area2={} pts={:?}", l.len(), signed_area(l), l);
-        }
-        let total: i64 = loops.iter().map(|l| signed_area(l).abs()).sum();
-        eprintln!("  total |2A| = {} (expect 4 for two unit cells)", total);
-    }
-
-    #[test]
-    fn probe_border_touch_full_image() {
-        // Full 2x2 of label 0 — component touches all four borders.
-        let labels = vec![0, 0, 0, 0];
-        let loops = contours_of(&labels, 2, 2, 0, (0, 0, 1, 1));
-        eprintln!("BORDER loops = {}", loops.len());
-        for (i, l) in loops.iter().enumerate() {
-            eprintln!("  loop[{i}] len={} area2={} pts={:?}", l.len(), signed_area(l), l);
-        }
-    }
-
-    #[test]
-    fn probe_plus_shape_concavities() {
-        // Plus/cross of label 0 in 3x3, corners are label 9.
-        //  9 0 9
-        //  0 0 0
-        //  9 0 9
-        let labels = vec![9, 0, 9, 0, 0, 0, 9, 0, 9];
-        let loops = contours_of(&labels, 3, 3, 0, (0, 0, 2, 2));
-        eprintln!("PLUS loops = {}", loops.len());
-        for (i, l) in loops.iter().enumerate() {
-            eprintln!("  loop[{i}] len={} area2={} pts={:?}", l.len(), signed_area(l), l);
-        }
-    }
-
-    #[test]
-    fn probe_hole_touches_diagonally_single_walk() {
-        // 4x4 all label 0 EXCEPT two diagonal holes that share a lattice corner:
-        // holes at (1,1) and (2,2).  Grid:
-        //  0 0 0 0
-        //  0 9 0 0
-        //  0 0 9 0
-        //  0 0 0 0
-        // The two holes touch at lattice corner (2,2). Tracing the hole
-        // boundary of label 0 forces the stitch walk to hit corner (2,2)
-        // where multiple inward edges meet -> the junction turn-rule decides.
-        let labels = vec![
-            0, 0, 0, 0,
-            0, 9, 0, 0,
-            0, 0, 9, 0,
-            0, 0, 0, 0,
-        ];
-        let loops = contours_of(&labels, 4, 4, 0, (0, 0, 3, 3));
-        eprintln!("DIAGHOLE loops = {}", loops.len());
-        let mut total = 0i64;
-        for (i, l) in loops.iter().enumerate() {
-            let a = signed_area(l);
-            total += a.abs();
-            eprintln!("  loop[{i}] len={} area2={} pts={:?}", l.len(), a, l);
-        }
-        // Outer 4x4 has |2A|=32. The two unit holes remove 2 each.
-        // Correct total |2A| with nonzero fill = 32 (outer) accounted with holes.
-        eprintln!("  total |2A| sum = {}", total);
-        for l in &loops { assert!(closes_ok(l), "degenerate loop {:?}", l); }
-    }
-
-    #[test]
-    fn probe_two_components_share_diagonal_one_walk() {
-        // A single label-0 region shaped so its OWN outer boundary pinches:
-        // an hourglass. 3x3:
-        //  0 0 0
-        //  9 0 9    <- middle row only center is 0; sides are 9
-        //  0 0 0
-        // Wait that's 4-connected through center. Boundary pinches at corners
-        // (1,1) and (2,1)? Let's see.
-        let labels = vec![
-            0, 0, 0,
-            9, 0, 9,
-            0, 0, 0,
-        ];
-        // label 0: top row (3 cells) + center (1,1) + bottom row (3 cells), all
-        // 4-connected through the center column. The two 9 cells create pinch
-        // corners on the boundary.
-        let loops = contours_of(&labels, 3, 3, 0, (0, 0, 2, 2));
-        eprintln!("HOURGLASS loops = {}", loops.len());
-        let mut total = 0i64;
-        for (i, l) in loops.iter().enumerate() {
-            let a = signed_area(l);
-            total += a.abs();
-            eprintln!("  loop[{i}] len={} area2={} pts={:?}", l.len(), a, l);
-        }
-        eprintln!("  total |2A| sum = {} (expect 14 = 7 cells * 2)", total);
-        for l in &loops { assert!(closes_ok(l), "degenerate loop {:?}", l); }
-    }
-
-    #[test]
-    fn probe_diaghole_after_collapse_and_two_pinches() {
-        // Same as DIAGHOLE but check collapse_collinear didn't fuse a pinch.
-        // Two holes touching at TWO corners would be a thicker pinch. Here use
-        // the standard diagonal touch and print pre/post collapse.
-        let labels = vec![
-            0, 0, 0, 0,
-            0, 9, 0, 0,
-            0, 0, 9, 0,
-            0, 0, 0, 0,
-        ];
-        let loops = contours_of(&labels, 4, 4, 0, (0, 0, 3, 3));
-        // Count repeated vertices in any single loop (a proper simple polygon has none).
-        for (i, l) in loops.iter().enumerate() {
-            let mut seen = std::collections::HashSet::new();
-            let mut dups = Vec::new();
-            for &p in l {
-                if !seen.insert(p) { dups.push(p); }
-            }
-            eprintln!("loop[{i}] repeated-vertices = {:?}", dups);
-        }
-    }
-
-    #[test]
-    fn probe_opposite_winding_pinch_cancellation() {
-        // Construct a region where two touching holes might wind oppositely.
-        // A label-0 plus-shaped solid with two separate notches that meet.
-        // 5x5, holes carved as a diagonal chain of THREE cells meeting at corners:
-        //  0 0 0 0 0
-        //  0 9 0 0 0
-        //  0 0 9 0 0
-        //  0 0 0 9 0
-        //  0 0 0 0 0
-        // three holes (1,1),(2,2),(3,3) form a diagonal staircase touching at
-        // corners (2,2) and (3,3).
-        let labels = vec![
-            0, 0, 0, 0, 0,
-            0, 9, 0, 0, 0,
-            0, 0, 9, 0, 0,
-            0, 0, 0, 9, 0,
-            0, 0, 0, 0, 0,
-        ];
-        let loops = contours_of(&labels, 5, 5, 0, (0, 0, 4, 4));
-        eprintln!("STAIRHOLE loops = {}", loops.len());
-        for (i, l) in loops.iter().enumerate() {
-            let a = signed_area(l);
-            eprintln!("  loop[{i}] len={} area2={} pts={:?}", l.len(), a, l);
-        }
-    }
-
-    #[test]
-    fn probe_diaghole_through_full_pipeline() {
-        use crate::simplify::simplify_closed;
-        // The DIAGHOLE figure-eight hole, then RDP it like trace.rs does.
-        let figure8 = vec![(2,1),(1,1),(1,2),(2,2),(2,3),(3,3),(3,2),(2,2)];
-        eprintln!("pre-RDP  len={} area2={}", figure8.len(), signed_area(&figure8));
-        for eps in [0.0_f64, 1.2, 2.0] {
-            let s = simplify_closed(&figure8, eps);
-            eprintln!("  eps={eps} -> len={} area2={} pts={:?}", s.len(), signed_area(&s), s);
-        }
-    }
-
-    #[test]
-    fn probe_single_pixel_collapse() {
-        // A single isolated label-0 pixel surrounded by label 9.
-        let labels = vec![9,9,9, 9,0,9, 9,9,9];
-        let loops = contours_of(&labels, 3, 3, 0, (1, 1, 1, 1));
-        eprintln!("SINGLEPX loops={}", loops.len());
-        for (i,l) in loops.iter().enumerate() {
-            eprintln!("  loop[{i}] len={} area2={} pts={:?}", l.len(), signed_area(l), l);
-        }
-    }
-
-    #[test]
-    fn probe_double_hole_pinch() {
-        // 5x5 label 0 frame-ish with TWO holes that touch at a diagonal,
-        // forcing a hole-boundary pinch:
-        //  0 0 0 0 0
-        //  0 9 0 9 0
-        //  0 0 9 0 0   <- wait, make holes touch diagonally
-        //  0 9 0 9 0
-        //  0 0 0 0 0
-        // Holes at (1,1),(3,1),(2,2),(1,3),(3,3): the center hole touches the
-        // corner holes diagonally. Under contour (label-based) the 9-cells are
-        // outside, so label-0's boundary pinches at (2,2)'s corners.
-        let labels = vec![
-            0, 0, 0, 0, 0,
-            0, 9, 0, 9, 0,
-            0, 0, 9, 0, 0,
-            0, 9, 0, 9, 0,
-            0, 0, 0, 0, 0,
-        ];
-        let loops = contours_of(&labels, 5, 5, 0, (0, 0, 4, 4));
-        eprintln!("DOUBLEHOLE loops = {}", loops.len());
-        for (i, l) in loops.iter().enumerate() {
-            eprintln!("  loop[{i}] len={} area2={}", l.len(), signed_area(l));
-        }
     }
 
     #[test]
