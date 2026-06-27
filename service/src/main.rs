@@ -15,7 +15,7 @@ use axum::{
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
-use svgit_pipeline::QuantizeConfig;
+use svgit_pipeline::{QuantizeConfig, TraceConfig};
 use tokio::sync::Semaphore;
 use vtracer::{ColorImage, ColorMode, Config, Hierarchical, PathSimplifyMode, Preset};
 
@@ -75,8 +75,11 @@ async fn index() -> Html<&'static str> {
 #[derive(Default)]
 struct RawParams {
     preset: Option<String>,
+    engine: Option<String>,
     quantize: Option<String>,
     colors: Option<usize>,
+    simplify: Option<f64>,
+    min_region: Option<u32>,
     color_mode: Option<String>,
     hierarchical: Option<String>,
     mode: Option<String>,
@@ -121,8 +124,11 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
 
         match name.as_str() {
             "preset" => p.preset = Some(value.to_string()),
+            "engine" => p.engine = Some(value.to_string()),
             "quantize" => p.quantize = Some(value.to_string()),
             "colors" => p.colors = value.parse().ok(),
+            "simplify" => p.simplify = value.parse().ok().filter(|v: &f64| v.is_finite()),
+            "min_region" => p.min_region = value.parse().ok(),
             "color_mode" => p.color_mode = Some(value.to_string()),
             "hierarchical" => p.hierarchical = Some(value.to_string()),
             "mode" => p.mode = Some(value.to_string()),
@@ -144,6 +150,9 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
     let config = build_config(&p);
     let quantize_on = matches!(p.quantize.as_deref(), Some("on") | Some("true") | Some("1"));
     let num_colors = p.colors.unwrap_or(16).clamp(2, 256);
+    let engine_owned = matches!(p.engine.as_deref(), Some("owned"));
+    let simplify_eps = p.simplify.unwrap_or(1.2).clamp(0.0, 10.0);
+    let min_region = p.min_region.unwrap_or(4).min(4096);
 
     // Limit concurrent CPU-bound conversions. Held until the response is built.
     let _permit = convert_slots()
@@ -175,7 +184,30 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
             .to_rgba8();
         let mut raw = rgba.into_raw();
 
-        // Owned Level-2 stage: optionally pre-quantize to N colors (LAB k-means)
+        // Owned engine: quantize to N colors then run the fully-owned flat
+        // tracer (segmentation → contours → simplify → SVG). No VTracer.
+        if engine_owned {
+            raw = svgit_pipeline::quantize_rgba(
+                raw,
+                &QuantizeConfig {
+                    num_colors,
+                    ..Default::default()
+                },
+            );
+            return Ok(svgit_pipeline::trace_rgba(
+                &raw,
+                w as usize,
+                h as usize,
+                &TraceConfig {
+                    alpha_threshold: 0,
+                    min_area: min_region,
+                    simplify: simplify_eps,
+                    background: true,
+                },
+            ));
+        }
+
+        // VTracer engine: optionally pre-quantize to N colors (LAB k-means)
         // before handing the flattened raster to the VTracer core.
         if quantize_on {
             raw = svgit_pipeline::quantize_rgba(

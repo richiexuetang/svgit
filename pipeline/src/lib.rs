@@ -10,6 +10,12 @@
 //! before the VTracer core; later stages will replace more of that core.
 
 pub mod color;
+pub mod contour;
 pub mod quantize;
+pub mod segment;
+pub mod simplify;
+pub mod svg;
+pub mod trace;
 
 pub use quantize::{quantize_rgba, QuantizeConfig};
+pub use trace::{trace_rgba, TraceConfig};
