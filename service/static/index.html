@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>svgit — raster → vector</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1c232c;
+    --border: #2a313c;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #4c8dff;
+    --accent-soft: #1f6feb33;
+    --danger: #ff6b6b;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  header .logo { font-weight: 700; font-size: 16px; letter-spacing: .3px; }
+  header .logo span { color: var(--accent); }
+  header .tag { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  .stats { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .stats b { color: var(--text); font-weight: 600; }
+
+  button, .btn {
+    font: inherit;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 12px;
+    cursor: pointer;
+    transition: border-color .12s, background .12s;
+  }
+  button:hover, .btn:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { filter: brightness(1.08); }
+
+  main { flex: 1; display: flex; min-height: 0; }
+
+  /* ---- controls ---- */
+  aside {
+    width: 290px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    background: var(--panel);
+    overflow-y: auto;
+    padding: 16px;
+  }
+  .group { margin-bottom: 20px; }
+  .group > h3 {
+    margin: 0 0 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .8px;
+    color: var(--muted);
+  }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 5px;
+    font-size: 12.5px;
+  }
+  .field label .val { color: var(--accent); font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+
+  .seg { display: flex; gap: 4px; flex-wrap: wrap; }
+  .seg button {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 4px;
+    font-size: 12px;
+  }
+  .seg button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+  select {
+    width: 100%;
+    font: inherit;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 10px;
+  }
+  .hide { display: none !important; }
+
+  /* ---- stage ---- */
+  section.stage-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: 18px;
+    gap: 12px;
+  }
+  .stage {
+    position: relative;
+    flex: 1;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    user-select: none;
+    --check: #20262e;
+    background-color: #161b22;
+    background-image:
+      linear-gradient(45deg, var(--check) 25%, transparent 25%),
+      linear-gradient(-45deg, var(--check) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, var(--check) 75%),
+      linear-gradient(-45deg, transparent 75%, var(--check) 75%);
+    background-size: 22px 22px;
+    background-position: 0 0, 0 11px, 11px -11px, -11px 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .empty { color: var(--muted); text-align: center; padding: 30px; }
+  .empty .big { font-size: 15px; color: var(--text); margin-bottom: 6px; }
+
+  .canvas {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    line-height: 0;
+    cursor: ew-resize;
+  }
+  .canvas .layer { position: absolute; inset: 0; }
+  .canvas img, .canvas svg { display: block; width: 100%; height: 100%; }
+  .canvas .base { position: relative; } /* defines size */
+  .canvas .over { clip-path: inset(0 calc(100% - var(--split, 50%)) 0 0); }
+
+  .divider {
+    position: absolute;
+    top: 0; bottom: 0;
+    left: var(--split, 50%);
+    width: 2px;
+    margin-left: -1px;
+    background: var(--accent);
+    pointer-events: none;
+    z-index: 4;
+  }
+  .divider::after {
+    content: "";
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 26px; height: 26px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 1px 6px #0008;
+  }
+  .divider::before {
+    content: "⟺";
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: #fff;
+    font-size: 13px;
+    z-index: 5;
+  }
+  .tag-pill {
+    position: absolute;
+    top: 10px;
+    padding: 3px 9px;
+    font-size: 11px;
+    letter-spacing: .5px;
+    border-radius: 20px;
+    background: #0009;
+    color: var(--text);
+    z-index: 6;
+    pointer-events: none;
+  }
+  .tag-pill.l { left: 10px; }
+  .tag-pill.r { right: 10px; }
+
+  .stage.dragover { border-color: var(--accent); background-color: var(--accent-soft); }
+  .busy-bar {
+    position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    background-size: 40% 100%;
+    animation: slide 1s linear infinite;
+    z-index: 7;
+    display: none;
+  }
+  .busy .busy-bar { display: block; }
+  @keyframes slide { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+
+  .err {
+    color: var(--danger);
+    font-size: 12.5px;
+    min-height: 16px;
+  }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">svg<span>it</span></div>
+  <div class="tag">raster → vector · vtracer core</div>
+  <div class="spacer"></div>
+  <div class="stats" id="stats"></div>
+  <button class="btn" id="uploadBtn">Upload</button>
+  <button class="btn primary" id="downloadBtn" disabled>Download SVG</button>
+  <input type="file" id="fileInput" accept="image/*">
+</header>
+
+<main>
+  <aside>
+    <div class="group">
+      <h3>Preset</h3>
+      <div class="field">
+        <select id="preset">
+          <option value="">Custom</option>
+          <option value="bw">Black &amp; White</option>
+          <option value="poster">Poster</option>
+          <option value="photo">Photo</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Clustering</h3>
+      <div class="field">
+        <label>Color mode</label>
+        <div class="seg" id="color_mode" data-default="color">
+          <button data-v="color" class="active">Color</button>
+          <button data-v="binary">B/W</button>
+        </div>
+      </div>
+      <div class="field color-only">
+        <label>Stacking</label>
+        <div class="seg" id="hierarchical" data-default="stacked">
+          <button data-v="stacked" class="active">Stacked</button>
+          <button data-v="cutout">Cutout</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Filter speckle <span class="val" id="filter_speckle-v"></span></label>
+        <input type="range" id="filter_speckle" min="0" max="16" step="1" value="4">
+      </div>
+      <div class="field color-only">
+        <label>Color precision <span class="val" id="color_precision-v"></span></label>
+        <input type="range" id="color_precision" min="1" max="8" step="1" value="6">
+      </div>
+      <div class="field color-only">
+        <label>Gradient step <span class="val" id="layer_difference-v"></span></label>
+        <input type="range" id="layer_difference" min="0" max="255" step="1" value="16">
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Curve fitting</h3>
+      <div class="field">
+        <label>Mode</label>
+        <div class="seg" id="mode" data-default="spline">
+          <button data-v="pixel">Pixel</button>
+          <button data-v="polygon">Polygon</button>
+          <button data-v="spline" class="active">Spline</button>
+        </div>
+      </div>
+      <div class="field spline-only">
+        <label>Corner threshold <span class="val" id="corner_threshold-v"></span>°</label>
+        <input type="range" id="corner_threshold" min="0" max="180" step="1" value="60">
+      </div>
+      <div class="field spline-only">
+        <label>Segment length <span class="val" id="length_threshold-v"></span></label>
+        <input type="range" id="length_threshold" min="3.5" max="10" step="0.1" value="4">
+      </div>
+      <div class="field spline-only">
+        <label>Splice threshold <span class="val" id="splice_threshold-v"></span>°</label>
+        <input type="range" id="splice_threshold" min="0" max="180" step="1" value="45">
+      </div>
+      <div class="field spline-only">
+        <label>Iterations <span class="val" id="max_iterations-v"></span></label>
+        <input type="range" id="max_iterations" min="1" max="20" step="1" value="10">
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Output</h3>
+      <div class="field">
+        <label>Path precision <span class="val" id="path_precision-v"></span></label>
+        <input type="range" id="path_precision" min="0" max="8" step="1" value="8">
+      </div>
+    </div>
+  </aside>
+
+  <section class="stage-wrap">
+    <div class="stage" id="stage">
+      <div class="busy-bar"></div>
+      <div class="empty" id="empty">
+        <div class="big">Drop an image here</div>
+        <div>or click Upload · paste from clipboard</div>
+      </div>
+      <span class="tag-pill l hide" id="pillL">Original</span>
+      <span class="tag-pill r hide" id="pillR">Vector</span>
+      <div class="canvas hide" id="canvas">
+        <img class="layer base" id="svgImg" alt="vector result">
+        <div class="layer over" id="origLayer"><img id="origImg" alt="original"></div>
+      </div>
+      <div class="divider hide" id="divider"></div>
+    </div>
+    <div class="err" id="err"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const stage = $('stage'), canvas = $('canvas'), divider = $('divider');
+const origImg = $('origImg'), svgImg = $('svgImg');
+
+let currentFile = null;   // the uploaded image Blob/File
+let lastSvgText = '';     // raw SVG for download
+let svgUrl = null;        // object URL for the rendered SVG
+let origUrl = null;       // object URL for the original raster
+let debounceTimer = null;
+let inflight = null;      // AbortController for the active request
+
+// ---- sliders with live value labels ----
+const sliders = ['filter_speckle','color_precision','layer_difference',
+                 'corner_threshold','length_threshold','splice_threshold','max_iterations','path_precision'];
+for (const id of sliders) {
+  const el = $(id), label = $(id + '-v');
+  const sync = () => { label.textContent = el.value; };
+  sync();
+  el.addEventListener('input', () => { sync(); markCustom(); scheduleConvert(); });
+}
+
+// A manual edit means the live params no longer match the chosen preset.
+function markCustom() { $('preset').value = ''; }
+
+// ---- segmented (button group) controls ----
+function segValue(id) { return $(id).querySelector('.active').dataset.v; }
+function setSeg(id, v) {
+  $(id).querySelectorAll('button').forEach(b =>
+    b.classList.toggle('active', b.dataset.v === v));
+}
+for (const id of ['color_mode','hierarchical','mode']) {
+  $(id).querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      setSeg(id, btn.dataset.v);
+      markCustom();
+      reflectConditional();
+      convertNow();
+    });
+  });
+}
+
+function reflectConditional() {
+  const isColor = segValue('color_mode') === 'color';
+  const isSpline = segValue('mode') === 'spline';
+  document.querySelectorAll('.color-only').forEach(e => e.classList.toggle('hide', !isColor));
+  document.querySelectorAll('.spline-only').forEach(e => e.classList.toggle('hide', !isSpline));
+}
+
+// ---- presets ----
+const PRESETS = {
+  bw:     { color_mode:'binary', hierarchical:'stacked', mode:'spline', filter_speckle:4,  color_precision:6, layer_difference:16, corner_threshold:60,  length_threshold:4, splice_threshold:45, path_precision:8 },
+  poster: { color_mode:'color',  hierarchical:'stacked', mode:'spline', filter_speckle:4,  color_precision:8, layer_difference:16, corner_threshold:60,  length_threshold:4, splice_threshold:45, path_precision:8 },
+  photo:  { color_mode:'color',  hierarchical:'stacked', mode:'spline', filter_speckle:10, color_precision:8, layer_difference:48, corner_threshold:180, length_threshold:4, splice_threshold:45, path_precision:8 },
+};
+$('preset').addEventListener('change', (e) => {
+  const cfg = PRESETS[e.target.value];
+  if (!cfg) return;
+  for (const [k, v] of Object.entries(cfg)) {
+    if (['color_mode','hierarchical','mode'].includes(k)) setSeg(k, v);
+    else { const el = $(k); if (el) { el.value = v; $(k + '-v').textContent = v; } }
+  }
+  reflectConditional();
+  convertNow();
+});
+
+function gatherParams() {
+  const p = {
+    color_mode: segValue('color_mode'),
+    hierarchical: segValue('hierarchical'),
+    mode: segValue('mode'),
+  };
+  for (const id of sliders) p[id] = $(id).value;
+  return p;
+}
+
+// ---- conversion ----
+function scheduleConvert() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(convertNow, 220);
+}
+
+async function convertNow() {
+  if (!currentFile) return;
+  clearTimeout(debounceTimer);
+
+  if (inflight) inflight.abort();
+  inflight = new AbortController();
+  const ctrl = inflight;
+
+  const form = new FormData();
+  form.append('image', currentFile);
+  for (const [k, v] of Object.entries(gatherParams())) form.append(k, v);
+
+  stage.classList.add('busy');
+  $('err').textContent = '';
+  const t0 = performance.now();
+
+  try {
+    const res = await fetch('/api/convert', { method: 'POST', body: form, signal: ctrl.signal });
+    if (!res.ok) throw new Error(await res.text() || ('HTTP ' + res.status));
+    const text = await res.text();
+    const ms = Math.round(performance.now() - t0);
+    if (ctrl === inflight) renderResult(text, ms);
+  } catch (e) {
+    if (e.name === 'AbortError') return;     // superseded by a newer request
+    $('err').textContent = 'Conversion failed: ' + e.message;
+  } finally {
+    if (ctrl === inflight) { stage.classList.remove('busy'); inflight = null; }
+  }
+}
+
+function renderResult(svgText, ms) {
+  lastSvgText = svgText;
+
+  // Add a viewBox so the SVG scales responsively in the preview.
+  const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+  const el = doc.documentElement;
+  const w = el.getAttribute('width'), h = el.getAttribute('height');
+  if (w && h && !el.getAttribute('viewBox')) el.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  el.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  el.setAttribute('width', '100%');
+  el.setAttribute('height', '100%');
+
+  if (svgUrl) URL.revokeObjectURL(svgUrl);
+  svgUrl = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(el)], { type: 'image/svg+xml' }));
+  svgImg.src = svgUrl;
+
+  $('downloadBtn').disabled = false;
+  const bytes = new Blob([svgText]).size;
+  const paths = (svgText.match(/<path/g) || []).length;
+  $('stats').innerHTML =
+    `${w}×${h} · <b>${paths}</b> paths · <b>${fmtBytes(bytes)}</b> · <b>${ms} ms</b>`;
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(2) + ' MB';
+}
+
+// ---- loading images ----
+function loadFile(file) {
+  if (!file || !file.type.startsWith('image/')) {
+    $('err').textContent = 'Please choose an image file.';
+    return;
+  }
+  currentFile = file;
+  if (origUrl) URL.revokeObjectURL(origUrl);
+  origUrl = URL.createObjectURL(file);
+  origImg.src = origUrl;
+  origImg.onload = () => {
+    // Give the stage a definite size up front so the original is visible
+    // during the first (possibly multi-second) conversion.
+    canvas.style.aspectRatio = `${origImg.naturalWidth} / ${origImg.naturalHeight}`;
+    $('empty').classList.add('hide');
+    canvas.classList.remove('hide');
+    divider.classList.remove('hide');
+    $('pillL').classList.remove('hide');
+    $('pillR').classList.remove('hide');
+    convertNow();
+  };
+}
+
+$('uploadBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', (e) => loadFile(e.target.files[0]));
+
+$('downloadBtn').addEventListener('click', () => {
+  if (!lastSvgText) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([lastSvgText], { type: 'image/svg+xml' }));
+  a.download = 'svgit-export.svg';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+
+// drag & drop
+['dragenter', 'dragover'].forEach(ev => stage.addEventListener(ev, (e) => {
+  e.preventDefault(); stage.classList.add('dragover');
+}));
+['dragleave', 'drop'].forEach(ev => stage.addEventListener(ev, (e) => {
+  e.preventDefault(); stage.classList.remove('dragover');
+}));
+stage.addEventListener('drop', (e) => loadFile(e.dataTransfer.files[0]));
+
+// paste
+document.addEventListener('paste', (e) => {
+  for (const item of (e.clipboardData?.items || [])) {
+    if (item.type.startsWith('image/')) { loadFile(item.getAsFile()); e.preventDefault(); return; }
+  }
+});
+
+// ---- split divider: click or drag anywhere on the stage to seek ----
+let dragging = false;
+function setSplit(clientX) {
+  const r = canvas.getBoundingClientRect();
+  const pct = Math.max(0, Math.min(100, ((clientX - r.left) / r.width) * 100));
+  canvas.style.setProperty('--split', pct + '%');
+  divider.style.setProperty('--split', pct + '%');
+}
+divider.style.setProperty('--split', '50%');
+canvas.style.setProperty('--split', '50%');
+canvas.addEventListener('pointerdown', (e) => {
+  dragging = true;
+  canvas.setPointerCapture(e.pointerId);
+  setSplit(e.clientX);
+});
+canvas.addEventListener('pointermove', (e) => { if (dragging) setSplit(e.clientX); });
+const endSplitDrag = () => { dragging = false; };
+canvas.addEventListener('pointerup', endSplitDrag);
+canvas.addEventListener('pointercancel', endSplitDrag);
+
+reflectConditional();
+</script>
+</body>
+</html>

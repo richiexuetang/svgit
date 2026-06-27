@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "svgit-service",
+      "runtimeExecutable": "/Users/richardtang/Projects/svgit/target/debug/svgit-service",
+      "runtimeArgs": [],
+      "port": 8080,
+      "autoPort": true
+    }
+  ]
+}

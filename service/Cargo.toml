@@ -1,0 +1,16 @@
+[package]
+name = "svgit-service"
+version = "0.1.0"
+edition = "2021"
+description = "Thin HTTP service wrapping the vtracer core with a live parameter UI."
+license = "MIT"
+
+[[bin]]
+name = "svgit-service"
+path = "src/main.rs"
+
+[dependencies]
+vtracer = { path = "../cmdapp" }
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
+image = "0.23.10"
