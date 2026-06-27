@@ -15,6 +15,7 @@ use axum::{
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
+use svgit_pipeline::QuantizeConfig;
 use tokio::sync::Semaphore;
 use vtracer::{ColorImage, ColorMode, Config, Hierarchical, PathSimplifyMode, Preset};
 
@@ -74,6 +75,8 @@ async fn index() -> Html<&'static str> {
 #[derive(Default)]
 struct RawParams {
     preset: Option<String>,
+    quantize: Option<String>,
+    colors: Option<usize>,
     color_mode: Option<String>,
     hierarchical: Option<String>,
     mode: Option<String>,
@@ -118,6 +121,8 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
 
         match name.as_str() {
             "preset" => p.preset = Some(value.to_string()),
+            "quantize" => p.quantize = Some(value.to_string()),
+            "colors" => p.colors = value.parse().ok(),
             "color_mode" => p.color_mode = Some(value.to_string()),
             "hierarchical" => p.hierarchical = Some(value.to_string()),
             "mode" => p.mode = Some(value.to_string()),
@@ -137,6 +142,8 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
 
     let bytes = image_bytes.ok_or_else(|| AppError::bad("missing `image` field"))?;
     let config = build_config(&p);
+    let quantize_on = matches!(p.quantize.as_deref(), Some("on") | Some("true") | Some("1"));
+    let num_colors = p.colors.unwrap_or(16).clamp(2, 256);
 
     // Limit concurrent CPU-bound conversions. Held until the response is built.
     let _permit = convert_slots()
@@ -166,8 +173,22 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
         let rgba = image::load_from_memory(&bytes)
             .map_err(|e| format!("could not decode image: {e}"))?
             .to_rgba8();
+        let mut raw = rgba.into_raw();
+
+        // Owned Level-2 stage: optionally pre-quantize to N colors (LAB k-means)
+        // before handing the flattened raster to the VTracer core.
+        if quantize_on {
+            raw = svgit_pipeline::quantize_rgba(
+                raw,
+                &QuantizeConfig {
+                    num_colors,
+                    ..Default::default()
+                },
+            );
+        }
+
         let img = ColorImage {
-            pixels: rgba.into_raw(),
+            pixels: raw,
             width: w as usize,
             height: h as usize,
         };

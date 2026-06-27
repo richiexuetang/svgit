@@ -1,0 +1,11 @@
+[package]
+name = "svgit-pipeline"
+version = "0.1.0"
+edition = "2021"
+description = "Owned raster-to-vector pipeline stages for svgit (Level 2). Starts with LAB color quantization."
+license = "MIT"
+
+[lib]
+name = "svgit_pipeline"
+
+[dependencies]

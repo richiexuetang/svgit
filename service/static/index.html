@@ -84,6 +84,13 @@
     font-size: 12.5px;
   }
   .field label .val { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .field label .hint {
+    color: var(--muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    align-self: center;
+  }
   input[type=range] { width: 100%; accent-color: var(--accent); }
 
   .seg { display: flex; gap: 4px; flex-wrap: wrap; }
@@ -240,6 +247,21 @@
     </div>
 
     <div class="group">
+      <h3>Color quantization</h3>
+      <div class="field">
+        <label>Pre-quantize <span class="hint">owned pipeline</span></label>
+        <div class="seg" id="quantize" data-default="off">
+          <button data-v="off" class="active">Off</button>
+          <button data-v="on">On</button>
+        </div>
+      </div>
+      <div class="field quantize-only">
+        <label>Colors <span class="val" id="colors-v"></span></label>
+        <input type="range" id="colors" min="2" max="64" step="1" value="16">
+      </div>
+    </div>
+
+    <div class="group">
       <h3>Clustering</h3>
       <div class="field">
         <label>Color mode</label>
@@ -338,13 +360,15 @@ let debounceTimer = null;
 let inflight = null;      // AbortController for the active request
 
 // ---- sliders with live value labels ----
-const sliders = ['filter_speckle','color_precision','layer_difference',
+const sliders = ['colors','filter_speckle','color_precision','layer_difference',
                  'corner_threshold','length_threshold','splice_threshold','max_iterations','path_precision'];
+// Sliders that belong to the owned pipeline, not a vtracer preset.
+const NON_PRESET_SLIDERS = new Set(['colors']);
 for (const id of sliders) {
   const el = $(id), label = $(id + '-v');
   const sync = () => { label.textContent = el.value; };
   sync();
-  el.addEventListener('input', () => { sync(); markCustom(); scheduleConvert(); });
+  el.addEventListener('input', () => { sync(); if (!NON_PRESET_SLIDERS.has(id)) markCustom(); scheduleConvert(); });
 }
 
 // A manual edit means the live params no longer match the chosen preset.
@@ -356,11 +380,11 @@ function setSeg(id, v) {
   $(id).querySelectorAll('button').forEach(b =>
     b.classList.toggle('active', b.dataset.v === v));
 }
-for (const id of ['color_mode','hierarchical','mode']) {
+for (const id of ['quantize','color_mode','hierarchical','mode']) {
   $(id).querySelectorAll('button').forEach(btn => {
     btn.addEventListener('click', () => {
       setSeg(id, btn.dataset.v);
-      markCustom();
+      if (id !== 'quantize') markCustom();
       reflectConditional();
       convertNow();
     });
@@ -370,8 +394,10 @@ for (const id of ['color_mode','hierarchical','mode']) {
 function reflectConditional() {
   const isColor = segValue('color_mode') === 'color';
   const isSpline = segValue('mode') === 'spline';
+  const isQuant = segValue('quantize') === 'on';
   document.querySelectorAll('.color-only').forEach(e => e.classList.toggle('hide', !isColor));
   document.querySelectorAll('.spline-only').forEach(e => e.classList.toggle('hide', !isSpline));
+  document.querySelectorAll('.quantize-only').forEach(e => e.classList.toggle('hide', !isQuant));
 }
 
 // ---- presets ----
@@ -393,6 +419,7 @@ $('preset').addEventListener('change', (e) => {
 
 function gatherParams() {
   const p = {
+    quantize: segValue('quantize'),
     color_mode: segValue('color_mode'),
     hierarchical: segValue('hierarchical'),
     mode: segValue('mode'),

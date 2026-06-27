@@ -4,5 +4,6 @@ members = [
     "cmdapp",
     "webapp",
     "service",
+    "pipeline",
 ]
 resolver = "2"
