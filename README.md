@@ -26,7 +26,8 @@ The project is built in three levels:
   exactly-N-color output.
 - **Level 3** — an ML layer (PyTorch → ONNX, run embedded in Rust via
   [`ort`](https://github.com/pykeio/ort)): salient-object background removal,
-  FastSAM "segment everything", and CNN edge/corner refinement.
+  FastSAM "segment everything", CNN edge/corner refinement, ×4 super-resolution
+  for low-res inputs, and SCUNet denoise / JPEG de-blocking.
 
 ## Quick start (the service)
 
@@ -52,7 +53,7 @@ need model weights — see below.
 | Engine | What it does |
 |--------|--------------|
 | **VTracer** | The upstream vtracer core — stacked color clustering + curve tracing. |
-| **Owned** | The dependency-free Level-2 pipeline; exact N-color flat output. Supports background removal and edge refinement. |
+| **Owned** | The dependency-free Level-2 pipeline; exact N-color flat output. Supports background removal, edge refinement, and gradient fills (detects smooth color ramps → `<linearGradient>`/`<radialGradient>`, merging quantization bands into one gradient). |
 | **Segment** | FastSAM "segment everything" → layered SVG, one `<g>` per detected object. |
 
 ## ML layer & models
@@ -71,6 +72,8 @@ SVGIT_MODEL_DIR=/path ./scripts/fetch-models.sh
 | `isnet-general-use.onnx` | ~178 MB | Remove background · **High** (sharper fine detail) |
 | `lineart.onnx` | ~17 MB | **Refine edges** (owned engine contour snapping) |
 | `FastSAM-x.onnx` | ~289 MB | **Segment** engine |
+| `realesr-general-x4v3.onnx` | ~4.9 MB | **Super-resolution** (upscale low-res inputs 4×, any engine) |
+| `scunet_color_psnr.onnx` | ~91 MB | **Denoise** / JPEG de-block (clean artifacts before tracing, any engine) |
 
 Until a model is present, its feature returns a clear "model not found" error; every
 other feature still works. The core tracer needs no models at all.
@@ -115,6 +118,8 @@ OPTIONS:
 | `bgremove` (`svgit-bgremove`) | ONNX background removal (u2netp / ISNet). |
 | `objseg` (`svgit-objseg`) | FastSAM object segmentation. |
 | `edgenet` (`svgit-edgenet`) | Line-art CNN edge map for contour refinement. |
+| `superres` (`svgit-superres`) | ONNX ×4 super-resolution (realesr-general-x4v3). |
+| `denoise` (`svgit-denoise`) | ONNX denoise / JPEG de-block (SCUNet). |
 
 ## Credits
 

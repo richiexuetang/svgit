@@ -53,4 +53,17 @@ fetch "lineart.onnx" \
   "https://huggingface.co/rocca/informative-drawings-line-art-onnx/resolve/main/model.onnx" \
   "1fef40b8f7126d827e30fbebccf95ae9b0b391795df926bf9366a821bad4f498"
 
+# realesr-general-x4v3 — lightweight (~4.9 MB) general-scene ×4 super-resolution
+# (SRVGGNetCompact). Upscales low-res inputs before tracing.
+fetch "realesr-general-x4v3.onnx" \
+  "https://huggingface.co/OwlMaster/AllFilesRope/resolve/main/realesr-general-x4v3.onnx" \
+  "09b757accd747d7e423c1d352b3e8f23e77cc5742d04bae958d4eb8082b76fa4"
+
+# SCUNet (PSNR) — blind denoise / JPEG de-block (~91 MB, Swin-Conv-UNet). Cleans
+# compression blocking and sensor noise before tracing. PSNR (not GAN) variant
+# = faithful restoration without hallucinated texture.
+fetch "scunet_color_psnr.onnx" \
+  "https://huggingface.co/deepghs/image_restoration/resolve/main/SCUNet-PSNR.onnx" \
+  "b0f8c12f1575bb49e39a85924152f1c6d4b527a4aae0432c9e5c7397123465e3"
+
 echo "All models ready in $DEST/"

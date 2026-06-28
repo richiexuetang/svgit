@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="DataSourceManagerImpl" format="xml" multifile-model="true">
+    <data-source source="LOCAL" name="koyebdb@ep-fragrant-union-apx0ariq.c-7.us-east-1.pg.koyeb.app" uuid="01dd33c1-ab52-47ca-8447-12d6727dc216">
+      <driver-ref>postgresql</driver-ref>
+      <synchronize>true</synchronize>
+      <jdbc-driver>org.postgresql.Driver</jdbc-driver>
+      <jdbc-url>jdbc:postgresql://ep-fragrant-union-apx0ariq.c-7.us-east-1.pg.koyeb.app/koyebdb</jdbc-url>
+      <working-dir>$ProjectFileDir$</working-dir>
+    </data-source>
+  </component>
+</project>

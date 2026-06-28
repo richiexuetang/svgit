@@ -12,10 +12,14 @@
       <sourceFolder url="file://$MODULE_DIR$/service/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/bgremove/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/bgremove/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/denoise/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/denoise/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/edgenet/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/edgenet/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/objseg/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/objseg/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/superres/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/superres/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

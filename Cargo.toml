@@ -8,5 +8,7 @@ members = [
     "bgremove",
     "objseg",
     "edgenet",
+    "superres",
+    "denoise",
 ]
 resolver = "2"

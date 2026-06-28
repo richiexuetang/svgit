@@ -76,6 +76,8 @@ async fn index() -> Html<&'static str> {
 struct RawParams {
     preset: Option<String>,
     engine: Option<String>,
+    denoise: Option<String>,
+    sr: Option<String>,
     bg_remove: Option<String>,
     bg_threshold: Option<f64>,
     bg_model: Option<String>,
@@ -84,6 +86,7 @@ struct RawParams {
     refine: Option<String>,
     refine_snap: Option<f64>,
     refine_edge: Option<f64>,
+    gradient: Option<String>,
     quantize: Option<String>,
     colors: Option<usize>,
     simplify: Option<f64>,
@@ -136,6 +139,8 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
         match name.as_str() {
             "preset" => p.preset = Some(value.to_string()),
             "engine" => p.engine = Some(value.to_string()),
+            "denoise" => p.denoise = Some(value.to_string()),
+            "sr" => p.sr = Some(value.to_string()),
             "bg_remove" => p.bg_remove = Some(value.to_string()),
             "bg_threshold" => {
                 p.bg_threshold = value.parse().ok().filter(|v: &f64| v.is_finite())
@@ -146,6 +151,7 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
             "refine" => p.refine = Some(value.to_string()),
             "refine_snap" => p.refine_snap = value.parse().ok().filter(|v: &f64| v.is_finite()),
             "refine_edge" => p.refine_edge = value.parse().ok().filter(|v: &f64| v.is_finite()),
+            "gradient" => p.gradient = Some(value.to_string()),
             "quantize" => p.quantize = Some(value.to_string()),
             "colors" => p.colors = value.parse().ok(),
             "simplify" => p.simplify = value.parse().ok().filter(|v: &f64| v.is_finite()),
@@ -183,6 +189,10 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
     let bg_remove = matches!(p.bg_remove.as_deref(), Some("on") | Some("true") | Some("1"));
     let bg_threshold = p.bg_threshold.unwrap_or(0.5).clamp(0.0, 1.0) as f32;
     let bg_model = svgit_bgremove::Model::parse(p.bg_model.as_deref().unwrap_or("u2netp"));
+    // Denoise and super-resolution preprocesses work for any engine (they just
+    // clean / upscale the raster), so they aren't gated on the engine choice.
+    let denoise_on = matches!(p.denoise.as_deref(), Some("on") | Some("true") | Some("1"));
+    let sr_on = matches!(p.sr.as_deref(), Some("on") | Some("true") | Some("1"));
     let engine_segment = matches!(p.engine.as_deref(), Some("segment"));
     let seg_conf = p.seg_conf.unwrap_or(0.4).clamp(0.05, 0.95) as f32;
     let seg_max = p.seg_max.unwrap_or(48).clamp(1, 256);
@@ -193,9 +203,25 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
         matches!(p.refine.as_deref(), Some("on") | Some("true") | Some("1")) && engine_owned;
     let refine_snap = p.refine_snap.unwrap_or(2.0).clamp(0.5, 4.0);
     let refine_edge = p.refine_edge.unwrap_or(0.25).clamp(0.05, 0.9) as f32;
+    // Gradient detection is owned-engine only (it refits the owned flat tracer's
+    // regions); the layered/VTracer paths don't use it.
+    let gradient_on =
+        matches!(p.gradient.as_deref(), Some("on") | Some("true") | Some("1")) && engine_owned;
 
     // Fail fast on a missing model *before* taking a converter slot — otherwise
     // a misconfigured deploy burns the whole pool on a predictable error.
+    if denoise_on && !svgit_denoise::default_model_path().exists() {
+        return Err(AppError::internal(format!(
+            "denoise model not found at {} — run scripts/fetch-models.sh",
+            svgit_denoise::default_model_path().display()
+        )));
+    }
+    if sr_on && !svgit_superres::default_model_path().exists() {
+        return Err(AppError::internal(format!(
+            "super-resolution model not found at {} — run scripts/fetch-models.sh",
+            svgit_superres::default_model_path().display()
+        )));
+    }
     if bg_remove && !svgit_bgremove::default_model_path(bg_model).exists() {
         return Err(AppError::internal(format!(
             "background-removal model not found at {} — run scripts/fetch-models.sh",
@@ -244,6 +270,33 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
             .map_err(|e| format!("could not decode image: {e}"))?
             .to_rgba8();
         let mut raw = rgba.into_raw();
+        // Working dimensions: super-resolution can change them, so everything
+        // downstream (edge map, bg-removal, quantize, trace) tracks `cw`/`ch`.
+        let (mut cw, mut ch) = (w as usize, h as usize);
+
+        // ML preprocess #1 — denoise / JPEG de-block: clean compression blocking
+        // and sensor noise first, so the quantizer doesn't turn 8×8 block seams
+        // and speckle into a haze of spurious regions. Same size out; runs before
+        // super-resolution (cheaper on the un-upscaled image, and SR then has a
+        // clean input). Large inputs pass through (the crate caps by pixel count).
+        if denoise_on {
+            raw = svgit_denoise::denoise(&raw, cw, ch, &svgit_denoise::default_model_path())?;
+        }
+
+        // ML preprocess #2 — super-resolve low-res inputs 4× so the tracer sees
+        // clean edges instead of vectorizing blocky pixels. Changes the working
+        // dims. Large inputs pass through unchanged (the crate caps by pixels).
+        if sr_on {
+            let up = svgit_superres::super_resolve(
+                &raw,
+                cw,
+                ch,
+                &svgit_superres::default_model_path(),
+            )?;
+            raw = up.rgba;
+            cw = up.width;
+            ch = up.height;
+        }
 
         // Edge-guided refinement: compute a CNN edge map from the *original*
         // image (before bg-removal / quantization) so snapping targets the true
@@ -251,8 +304,8 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
         let edge: Option<Vec<f32>> = if refine_on {
             Some(svgit_edgenet::edge_map(
                 &raw,
-                w as usize,
-                h as usize,
+                cw,
+                ch,
                 &svgit_edgenet::default_model_path(),
             )?)
         } else {
@@ -261,8 +314,8 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
         let refiner = edge.as_ref().map(|e| {
             svgit_pipeline::Refiner::new(
                 e,
-                w as usize,
-                h as usize,
+                cw,
+                ch,
                 svgit_pipeline::RefineConfig {
                     snap_radius: refine_snap,
                     edge_threshold: refine_edge,
@@ -279,8 +332,8 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
         if bg_remove {
             raw = svgit_bgremove::remove_background(
                 &raw,
-                w as usize,
-                h as usize,
+                cw,
+                ch,
                 bg_model,
                 &svgit_bgremove::default_model_path(bg_model),
                 &svgit_bgremove::BgConfig {
@@ -292,11 +345,11 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
         // Segment engine: FastSAM "segment everything" → per-pixel object ids →
         // quantize → layered owned trace (one <g> per object).
         if engine_segment {
-            let npx = (w as usize) * (h as usize);
+            let npx = (cw) * (ch);
             let instances = svgit_objseg::segment_everything(
                 &raw,
-                w as usize,
-                h as usize,
+                cw,
+                ch,
                 &svgit_objseg::default_model_path(),
                 &svgit_objseg::SegConfig {
                     conf: seg_conf,
@@ -324,8 +377,8 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
             );
             return Ok(svgit_pipeline::trace_layered(
                 &raw,
-                w as usize,
-                h as usize,
+                cw,
+                ch,
                 &instance_id,
                 instances.len(),
                 &TraceConfig {
@@ -336,6 +389,7 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
                     curve: curve_on,
                     corner_threshold: curve_corner,
                     curve_error: curve_err,
+                    gradient: false,
                 },
                 refiner.as_ref(),
             ));
@@ -344,6 +398,9 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
         // Owned engine: quantize to N colors then run the fully-owned flat
         // tracer (segmentation → contours → simplify → SVG). No VTracer.
         if engine_owned {
+            // Gradient detection refits regions against the *original* colors, so
+            // keep a pre-quantization copy (only when needed — it's a full clone).
+            let original = if gradient_on { Some(raw.clone()) } else { None };
             raw = svgit_pipeline::quantize_rgba(
                 raw,
                 &QuantizeConfig {
@@ -353,8 +410,8 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
             );
             return Ok(svgit_pipeline::trace_rgba(
                 &raw,
-                w as usize,
-                h as usize,
+                cw,
+                ch,
                 &TraceConfig {
                     alpha_threshold: 0,
                     min_area: min_region,
@@ -365,7 +422,9 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
                     curve: curve_on,
                     corner_threshold: curve_corner,
                     curve_error: curve_err,
+                    gradient: gradient_on,
                 },
+                original.as_deref(),
                 refiner.as_ref(),
             ));
         }
@@ -384,8 +443,8 @@ async fn convert(mut multipart: Multipart) -> Result<Response, AppError> {
 
         let img = ColorImage {
             pixels: raw,
-            width: w as usize,
-            height: h as usize,
+            width: cw,
+            height: ch,
         };
         let svg = vtracer::convert(img, config)?;
         Ok(svg.to_string())

@@ -1,0 +1,17 @@
+[package]
+name = "svgit-superres"
+version = "0.1.0"
+edition = "2021"
+description = "ONNX (realesr-general-x4v3) super-resolution preprocessor for svgit (Level 3 ML layer)."
+license = "MIT"
+
+[lib]
+name = "svgit_superres"
+
+[dependencies]
+# ONNX Runtime bindings. `download-binaries` fetches a prebuilt onnxruntime at
+# build time so we don't depend on a system install.
+ort = { version = "=2.0.0-rc.10", features = ["download-binaries"] }
+# Used only to resample the alpha channel (the model upscales RGB; alpha is
+# scaled separately to match). Pinned to the workspace `image` version.
+image = "0.23.10"

@@ -1,0 +1,19 @@
+[package]
+name = "svgit-denoise"
+version = "0.1.0"
+edition = "2021"
+description = "ONNX (SCUNet) denoise / JPEG de-block preprocessor for svgit (Level 3 ML layer)."
+license = "MIT"
+
+[lib]
+name = "svgit_denoise"
+
+[dependencies]
+# ONNX Runtime bindings. `download-binaries` fetches a prebuilt onnxruntime at
+# build time so we don't depend on a system install.
+ort = { version = "=2.0.0-rc.10", features = ["download-binaries"] }
+
+[dev-dependencies]
+# Only the integration test needs image decode/encode; the library works on raw
+# RGBA buffers and pulls in nothing but `ort`.
+image = "0.23.10"

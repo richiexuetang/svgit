@@ -10,10 +10,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::contour::contours_of;
 use crate::curvefit;
+use crate::gradient::{fit_all, GradientConfig};
 use crate::refine::Refiner;
 use crate::segment::{segment, Segmentation};
 use crate::simplify::simplify_closed;
-use crate::svg::{polygon_subpath, polygon_subpath_f, to_svg, to_svg_layered, Region};
+use crate::svg::{polygon_subpath, polygon_subpath_f, to_svg, to_svg_layered, Fill, Region};
 
 /// Lattice points where 3+ distinct regions (including "outside") meet. Pinning
 /// these in simplification keeps adjacent regions' shared boundaries aligned —
@@ -65,6 +66,10 @@ pub struct TraceConfig {
     pub corner_threshold: f64,
     /// Curve-fit error tolerance in pixels.
     pub curve_error: f64,
+    /// Detect smooth color ramps in regions and emit `<linearGradient>` fills
+    /// instead of flat colors. Requires the original (pre-quantization) pixels to
+    /// be passed to [`trace_rgba`]; ignored otherwise.
+    pub gradient: bool,
 }
 
 impl Default for TraceConfig {
@@ -77,6 +82,7 @@ impl Default for TraceConfig {
             curve: false,
             corner_threshold: 80.0,
             curve_error: 2.0,
+            gradient: false,
         }
     }
 }
@@ -112,6 +118,7 @@ fn regions_of(
     cfg: &TraceConfig,
     skip: Option<usize>,
     refine: Option<&Refiner>,
+    fills: Option<&[Option<Fill>]>,
 ) -> Vec<Region> {
     let bboxes = seg.bboxes();
     // Shared junctions, pinned in simplification so adjacent regions tile gaplessly.
@@ -122,6 +129,11 @@ fn regions_of(
             continue;
         }
         let color = palette[(seg.component_color[c] - 1) as usize];
+        // Use the precomputed per-component gradient fill when present; fall back
+        // to the flat palette color otherwise.
+        let fill = fills
+            .and_then(|f| f.get(c).cloned().flatten())
+            .unwrap_or(Fill::Solid(color));
         let raw_loops = contours_of(&seg.labels, seg.width, seg.height, c as u32, bboxes[c]);
         let mut subpaths = Vec::with_capacity(raw_loops.len());
         for lp in raw_loops {
@@ -154,7 +166,7 @@ fn regions_of(
             subpaths.push(sub);
         }
         if !subpaths.is_empty() {
-            regions.push(Region { color, subpaths });
+            regions.push(Region { fill, subpaths });
         }
     }
     regions
@@ -167,6 +179,7 @@ pub fn trace_rgba(
     width: usize,
     height: usize,
     cfg: &TraceConfig,
+    original: Option<&[u8]>,
     refine: Option<&Refiner>,
 ) -> String {
     let n = width * height;
@@ -180,9 +193,21 @@ pub fn trace_rgba(
     let mut seg = segment(&idx, width, height);
     seg.merge_small(cfg.min_area);
 
+    // Gradient fitting needs the original (pre-quantization) colors. fit_all
+    // merges adjacent bands and returns one optional fill per component.
+    let fills = if cfg.gradient {
+        original
+            .filter(|o| o.len() >= n * 4)
+            .map(|o| fit_all(&seg, o, &GradientConfig::default()))
+    } else {
+        None
+    };
+
     // --- choose a background region (largest opaque) to lay down as a rect ---
+    // Skipped in gradient mode: the largest region may itself be a gradient, so
+    // we trace it as a path rather than flattening it to a solid rect.
     let mut bg_region: Option<usize> = None;
-    if cfg.background {
+    if cfg.background && fills.is_none() {
         let mut best_area = 0u32;
         for c in 0..seg.num_components {
             if seg.component_color[c] != 0 && seg.component_area[c] > best_area {
@@ -193,7 +218,7 @@ pub fn trace_rgba(
     }
     let background = bg_region.map(|c| palette[(seg.component_color[c] - 1) as usize]);
 
-    let regions = regions_of(&seg, &palette, cfg, bg_region, refine);
+    let regions = regions_of(&seg, &palette, cfg, bg_region, refine, fills.as_deref());
     to_svg(width, height, background, &regions)
 }
 
@@ -238,7 +263,8 @@ pub fn trace_layered(
         }
         let mut seg = segment(&midx, width, height);
         seg.merge_small(cfg.min_area);
-        let regions = regions_of(&seg, &palette, cfg, None, refine);
+        // Gradients are owned-engine only (v1); the layered tracer stays flat.
+        let regions = regions_of(&seg, &palette, cfg, None, refine, None);
         if regions.is_empty() {
             continue;
         }
@@ -270,7 +296,7 @@ mod tests {
             [0, 0, 255, 255],
             [0, 0, 255, 255],
         ]);
-        let svg = trace_rgba(&px, 2, 2, &TraceConfig { min_area: 0, simplify: 0.0, ..Default::default() }, None);
+        let svg = trace_rgba(&px, 2, 2, &TraceConfig { min_area: 0, simplify: 0.0, ..Default::default() }, None, None);
         assert!(svg.starts_with("<?xml"));
         assert!(svg.contains("<svg"));
         assert!(svg.ends_with("</svg>\n"));
@@ -291,7 +317,7 @@ mod tests {
             [0, 0, 0, 0],
             [0, 0, 0, 0],
         ]);
-        let svg = trace_rgba(&px, 2, 2, &TraceConfig { background: false, min_area: 0, simplify: 0.0, ..Default::default() }, None);
+        let svg = trace_rgba(&px, 2, 2, &TraceConfig { background: false, min_area: 0, simplify: 0.0, ..Default::default() }, None, None);
         assert_eq!(svg.matches("<path").count(), 1);
         assert!(svg.contains("#00ff00"));
         assert!(!svg.contains("<rect"));
@@ -305,7 +331,7 @@ mod tests {
         let r = [200, 0, 0, 255];
         let g = [0, 200, 0, 255];
         let px = rgba(&[r, r, g, r, g, r]);
-        let svg = trace_rgba(&px, 6, 1, &TraceConfig { min_area: 0, simplify: 0.0, ..Default::default() }, None);
+        let svg = trace_rgba(&px, 6, 1, &TraceConfig { min_area: 0, simplify: 0.0, ..Default::default() }, None, None);
         assert!(svg.contains("<rect")); // red background
         assert_eq!(svg.matches("<path").count(), 1, "the two greens merge to one path");
         assert_eq!(svg.matches('M').count(), 2, "one path, two subpaths");
@@ -314,9 +340,41 @@ mod tests {
 
     #[test]
     fn empty_image_is_valid_svg() {
-        let svg = trace_rgba(&[], 0, 0, &TraceConfig::default(), None);
+        let svg = trace_rgba(&[], 0, 0, &TraceConfig::default(), None, None);
         assert!(svg.contains("<svg"));
         assert!(svg.contains("</svg>"));
+    }
+
+    #[test]
+    fn gradient_region_emits_lineargradient() {
+        // 16×16 region that quantized to ONE flat color but whose *original*
+        // pixels ramp red 0→255 across x — the exact case gradient detection is
+        // for. `pixels` (quantized) is uniform → one region; `original` is the
+        // ramp the gradient is fit from.
+        let (w, h) = (16usize, 16usize);
+        let mut quant = vec![0u8; w * h * 4];
+        let mut orig = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let p = (y * w + x) * 4;
+                quant[p] = 128; // flat red after quantization
+                quant[p + 3] = 255;
+                orig[p] = ((x * 255) / (w - 1)) as u8; // red ramp in the original
+                orig[p + 3] = 255;
+            }
+        }
+        let cfg = TraceConfig { min_area: 0, simplify: 0.0, gradient: true, ..Default::default() };
+        let svg = trace_rgba(&quant, w, h, &cfg, Some(&orig), None);
+        assert!(svg.contains("<defs>"), "defs block present");
+        assert!(svg.contains("<linearGradient id=\"g0\""), "a gradient is defined");
+        assert!(svg.contains("fill=\"url(#g0)\""), "the path references the gradient");
+        assert!(!svg.contains("<rect"), "gradient mode drops the background rect");
+
+        // With gradient off, the same region is a flat solid (no gradient).
+        let cfg_flat = TraceConfig { min_area: 0, simplify: 0.0, gradient: false, ..Default::default() };
+        let flat = trace_rgba(&quant, w, h, &cfg_flat, Some(&orig), None);
+        assert!(!flat.contains("linearGradient"), "no gradient when disabled");
+        assert!(flat.contains("#800000"), "flat red fill instead");
     }
 
     #[test]
